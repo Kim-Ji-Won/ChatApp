@@ -114,28 +114,29 @@ public final class ConversationView extends JComponent implements Scrollable {
                 height += layout.getAscent()+layout.getDescent()+layout.getLeading()+5;
             }
         }
-        return new Lines(layouts, width, height);
+        // 줄 간격은 줄 사이에만 두고 마지막 줄 아래에는 추가하지 않는다.
+        return new Lines(layouts, width, Math.max(0, height-5));
     }
     private int render(Graphics2D graphics, int width) {
-        int y = 22;
+        int y = 10;
         for (int index=0; index<entries.size(); index++) {
             Entry entry=entries.get(index);
             boolean continued=index>0 && sameGroup(entries.get(index-1),entry);
             boolean continues=index+1<entries.size() && sameGroup(entry,entries.get(index+1));
             if (entry.notice) {
                 Lines lines = wrap(entry.text, Math.max(80,width-100), SMALL);
-                int w = (int)Math.ceil(lines.width)+28, h = (int)Math.ceil(lines.height)+12;
+                int w = (int)Math.ceil(lines.width)+24, h = (int)Math.ceil(lines.height)+8;
                 if (graphics != null) {
                     int x = (width-w)/2;
-                    graphics.setColor(new Color(0xC9D9DD)); graphics.fillRoundRect(x,y,w,h,22,22);
-                    graphics.setColor(new Color(0x63777D)); drawLines(graphics,lines,x+14,y+5);
+                    graphics.setColor(new Color(0xD3E1E5)); graphics.fillRoundRect(x,y,w,h,22,22);
+                    graphics.setColor(new Color(0x63777D)); drawLines(graphics,lines,x+12,y+4);
                 }
-                y += h+24;
+                y += h+16;
                 continue;
             }
             Lines lines = wrap(entry.text, Math.max(100,Math.min(420,width-180)),BODY);
             int bubbleWidth = (int)Math.ceil(lines.width)+28;
-            int bubbleHeight = (int)Math.ceil(lines.height)+18;
+            int bubbleHeight = (int)Math.ceil(lines.height)+16;
             int x = entry.mine ? width-26-bubbleWidth : 72;
             int top = y+(entry.mine || continued ? 0 : 21);
             if (graphics != null) {

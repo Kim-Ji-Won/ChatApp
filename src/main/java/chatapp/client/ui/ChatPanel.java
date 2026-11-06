@@ -77,7 +77,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
     public ChatPanel() {
         super(new BorderLayout(0, 10));
         setBackground(Theme.BACKGROUND);
-        setBorder(new EmptyBorder(16, 20, 10, 20));
+        setBorder(new EmptyBorder(12, 20, 10, 20));
         setPreferredSize(new Dimension(1080, 720));
         timeout.setRepeats(false);
         JPanel top = Theme.panel(new BorderLayout());
@@ -86,7 +86,9 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         logo.setIcon(Theme.smile(30)); logo.setIconTextGap(10);
         brand.add(logo);
         top.add(brand, BorderLayout.WEST);
-        JPanel account = Theme.panel(new FlowLayout(FlowLayout.RIGHT, 12, 4));
+        JPanel account = Theme.panel(new FlowLayout(FlowLayout.RIGHT, 12, 0));
+        identity.setIconTextGap(6);
+        disconnect.setBorder(new EmptyBorder(8, 14, 8, 14));
         account.add(identity); account.add(disconnect);
         top.add(account, BorderLayout.EAST);
         add(top, BorderLayout.NORTH);
@@ -175,7 +177,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         JPanel panel = Theme.panel(new BorderLayout());
         JPanel conversations = new JPanel(new BorderLayout(0, 14)); conversations.setBackground(Color.WHITE);
         conversations.setPreferredSize(new Dimension(320, 0));
-        conversations.setBorder(new EmptyBorder(24, 20, 16, 20));
+        conversations.setBorder(new EmptyBorder(18, 20, 16, 20));
         JPanel tools = Theme.panel(new BorderLayout(0, 16));
         JPanel heading = Theme.panel(new BorderLayout());
         heading.add(Theme.label("채팅", 26, true), BorderLayout.WEST);
@@ -190,16 +192,16 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         createRoomPanel.add(create, BorderLayout.SOUTH); createRoomPanel.setVisible(false);
         tools.add(createRoomPanel, BorderLayout.SOUTH); conversations.add(tools, BorderLayout.NORTH);
         roomList.setName("roomList"); roomList.setBackground(Color.WHITE);
-        roomList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION); roomList.setFixedCellHeight(88);
+        roomList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION); roomList.setFixedCellHeight(72);
         roomList.setCellRenderer((list, room, index, selected, focus) -> {
             JPanel cell = Theme.rounded(new BorderLayout(12, 0), room.id().equals(currentRoom) ? new Color(0xFFF6CE) : Color.WHITE, 20);
             // Open-room state and keyboard selection are independent during a room switch.
             if (selected && list.hasFocus()) {
                 cell.setBorder(BorderFactory.createCompoundBorder(
-                        BorderFactory.createLineBorder(Theme.BORDER), new EmptyBorder(14, 7, 14, 7)));
-            } else cell.setBorder(new EmptyBorder(15, 8, 15, 8));
-            cell.add(new JLabel(Theme.avatar(room.name(), 50)), BorderLayout.WEST);
-            JPanel words = Theme.panel(new BorderLayout(0, 7));
+                        BorderFactory.createLineBorder(Theme.BORDER), new EmptyBorder(10, 7, 10, 7)));
+            } else cell.setBorder(new EmptyBorder(11, 8, 11, 8));
+            cell.add(new JLabel(Theme.avatar(room.name(), 42)), BorderLayout.WEST);
+            JPanel words = Theme.panel(new BorderLayout(0, 4));
             JPanel titleRow = Theme.panel(new BorderLayout(8, 0));
             JLabel title = Theme.label(room.name(), 14, true); titleRow.add(title, BorderLayout.CENTER);
             String time = recentTimes.get(room.id());
@@ -256,8 +258,8 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
     private JPanel chatPage() {
         JPanel panel = Theme.panel(new BorderLayout());
         JPanel conversation = new JPanel(new BorderLayout()); conversation.setBackground(Theme.CHAT);
-        JPanel heading = Theme.panel(new BorderLayout(16, 0)); heading.setBorder(new EmptyBorder(18, 22, 18, 22));
-        roomTitle.setName("roomTitle"); roomTitle.setIcon(Theme.smile(42)); roomTitle.setIconTextGap(12);
+        JPanel heading = Theme.panel(new BorderLayout(16, 0)); heading.setBorder(new EmptyBorder(14, 22, 12, 22));
+        roomTitle.setName("roomTitle"); roomTitle.setIcon(Theme.smile(38)); roomTitle.setIconTextGap(12);
         heading.add(roomTitle, BorderLayout.CENTER);
         JPanel actions = Theme.panel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
         membersToggle.setBorder(new EmptyBorder(10, 12, 10, 12)); leave.setBorder(new EmptyBorder(10, 12, 10, 12));
@@ -394,6 +396,8 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
                     message.requireFields(1);
                     self = message.field(0); connecting = false; connected = true;
                     identity.setText(self + (demoMode ? " · 데모" : " · 연결됨"));
+                    identity.setIcon(demoMode ? null : connectionDot());
+                    notice.setVisible(demoMode);
                     notice.setText(demoMode ? "데모 모드 · 메시지는 내 화면에만 보여요" :
                             "서버에 연결됐어요 · 함께 이야기해 보세요");
                     cards.show(pages, "lobby");
@@ -496,7 +500,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         allRooms.clear(); recentMessages.clear(); recentTimes.clear(); recentActivity.clear(); drafts.clear(); activitySequence=0; roomSearch.setText("");
         createRoomPanel.setVisible(false); filterRooms();
         roomModel.clear(); userModel.clear(); transcript.clear(); messageInput.setText("");
-        identity.setText("연결되지 않음"); notice.setText("오늘도, 가볍게 이야기해요.");
+        identity.setText("연결되지 않음"); identity.setIcon(null); notice.setVisible(true); notice.setText("오늘도, 가볍게 이야기해요.");
         conversationCards.show(conversationPages, "empty"); membersPanel.setVisible(false); updateMembers();
         cards.show(pages, "connection"); updateButtons();
     }
@@ -513,6 +517,17 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         return !text.isEmpty() && text.length() <= limit && text.chars().noneMatch(Character::isISOControl);
     }
     private static String reason(Exception e) { return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
+    private static Icon connectionDot() {
+        return new Icon() {
+            public int getIconWidth() { return 8; }
+            public int getIconHeight() { return 8; }
+            public void paintIcon(Component c, Graphics graphics, int x, int y) {
+                Graphics2D g = (Graphics2D) graphics.create();
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g.setColor(new Color(0x64A581)); g.fillOval(x, y, 8, 8); g.dispose();
+            }
+        };
+    }
     private static JButton namedButton(String name, String text, boolean primary) {
         JButton button = Theme.button(text, primary); button.setName(name); return button;
     }
