@@ -6,10 +6,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** 1주차 서버 검증: 클라이언트 3개 접속, 방 2개 메시지 분리, 퇴장·접속 종료 반영. */
 public final class ServerChecks {
@@ -21,7 +24,14 @@ public final class ServerChecks {
         final DataOutputStream out;
 
         Client(int port) throws Exception {
-            socket = new Socket("127.0.0.1", port);
+            this(port, 0);
+        }
+
+        /** receiveBuffer > 0이면 연결 전에 수신 버퍼를 작게 설정한다(느린 수신자 재현용). */
+        Client(int port, int receiveBuffer) throws Exception {
+            socket = new Socket();
+            if (receiveBuffer > 0) socket.setReceiveBufferSize(receiveBuffer);
+            socket.connect(new InetSocketAddress("127.0.0.1", port));
             socket.setSoTimeout(2000);
             in = new DataInputStream(socket.getInputStream());
             out = new DataOutputStream(socket.getOutputStream());
@@ -219,7 +229,119 @@ public final class ServerChecks {
         again.send("HELLO", "정윤");
         check(again.expect("WELCOME").field(0).equals("정윤"), "접속 종료 후 닉네임 재사용");
 
+        slowClientCheck(port);
+
         System.out.println("\n통과 " + passed + "건");
         server.stop();
+    }
+
+    private static int roomCount(Message rooms, String name) {
+        List<String> f = rooms.fields();
+        for (int i = 0; i + 2 < f.size(); i += 3) {
+            if (f.get(i + 1).equals(name)) return Integer.parseInt(f.get(i + 2));
+        }
+        return -1;
+    }
+
+    /** 메시지를 읽지 않는 클라이언트가 있어도 다른 방의 요청 처리가 멈추지 않아야 한다. */
+    private static void slowClientCheck(int port) throws Exception {
+        Client slow = new Client(port, 1024);
+        slow.send("HELLO", "느린사람"); // 이후 수신 메시지를 전혀 읽지 않는다.
+        slow.send("ROOM_CREATE", "느린방");
+        Thread.sleep(300);
+
+        Client flooder = new Client(port);
+        flooder.send("HELLO", "발신자");
+        flooder.expect("WELCOME");
+        List<String> listed = flooder.expect("ROOMS").fields();
+        String slowRoomId = null;
+        for (int i = 0; i + 2 < listed.size(); i += 3) {
+            if (listed.get(i + 1).equals("느린방")) slowRoomId = listed.get(i);
+        }
+        check(slowRoomId != null, "느린 클라이언트 방 확인");
+        flooder.send("ROOM_JOIN", slowRoomId);
+        flooder.expect("ROOM_JOINED");
+        flooder.socket.setSoTimeout(0);
+        AtomicInteger lastSeq = new AtomicInteger(-1);
+        AtomicBoolean ordered = new AtomicBoolean(true);
+        Thread drain = new Thread(() -> { // 발신자 본인의 수신 메시지를 비우며 도착 순서를 기록한다.
+            try {
+                while (true) {
+                    Message received = Message.read(flooder.in);
+                    if (!received.type().equals("CHAT_MESSAGE")) continue;
+                    int seq = Integer.parseInt(received.field(2).substring(0, received.field(2).indexOf(':')));
+                    if (seq != lastSeq.get() + 1) ordered.set(false);
+                    lastSeq.set(seq);
+                }
+            } catch (Exception ignored) {
+                // 종료
+            }
+        });
+        drain.setDaemon(true);
+        drain.start();
+
+        Client other = new Client(port);
+        other.send("HELLO", "관찰자");
+        other.expect("WELCOME");
+        other.expect("ROOMS");
+        other.send("ROOM_CREATE", "다른방");
+        other.expect("ROOM_JOINED");
+        other.expect("ROOM_USERS");
+        other.expect("SYSTEM");
+        other.expect("ROOMS");
+
+        AtomicBoolean done = new AtomicBoolean(false);
+        Thread flood = new Thread(() -> {
+            String padding = "x".repeat(900);
+            try {
+                for (int i = 0; i < 20_000; i++) {
+                    flooder.send("CHAT_SEND", i + ":" + padding);
+                    if (i % 20 == 19) Thread.sleep(2); // 발신자 본인은 수신을 따라갈 수 있는 속도로 보낸다.
+                }
+            } catch (Exception ignored) {
+                // 서버가 연결을 끊은 경우
+            } finally {
+                done.set(true);
+            }
+        });
+        flood.setDaemon(true);
+        flood.start();
+
+        long worstMillis = 0;
+        int probes = 0;
+        int newcomers = 0;
+        while (!done.get()) {
+            long start = System.nanoTime();
+            other.send("ROOM_LIST");
+            other.expect("ROOMS"); // 2초 안에 응답이 없으면 예외로 실패
+            if (probes % 5 == 0) { // 신규 접속·닉네임 등록도 막히지 않아야 한다.
+                Client newcomer = new Client(port);
+                newcomer.send("HELLO", "신규" + newcomers);
+                newcomer.expect("WELCOME");
+                newcomer.expect("ROOMS");
+                newcomer.close();
+                newcomers++;
+            }
+            worstMillis = Math.max(worstMillis, (System.nanoTime() - start) / 1_000_000);
+            probes++;
+            Thread.sleep(20);
+        }
+        flood.join();
+        check(probes > 0 && worstMillis < 1000, "느린 연결이 있어도 다른 방 응답 유지(최대 " + worstMillis + "ms, " + probes + "회)");
+        check(newcomers > 0, "느린 연결이 있어도 신규 접속 처리(" + newcomers + "회)");
+        for (int i = 0; i < 50 && lastSeq.get() != 19_999; i++) Thread.sleep(100);
+        check(ordered.get() && lastSeq.get() == 19_999, "대량 전송 중에도 메시지 순서·전달 유지(" + (lastSeq.get() + 1) + "건)");
+
+        // 대기열이 넘친 느린 연결은 서버가 정리한다: 느린방에는 발신자만 남는다.
+        int remaining = -1;
+        for (int i = 0; i < 50 && remaining != 1; i++) {
+            other.send("ROOM_LIST");
+            remaining = roomCount(other.expect("ROOMS"), "느린방");
+            if (remaining != 1) Thread.sleep(100);
+        }
+        check(remaining == 1, "응답하지 않는 연결 정리");
+        flooder.close();
+        other.close();
+        slow.close();
     }
 }
