@@ -69,4 +69,36 @@
 
 ## 다음 주 확장
 
-귓속말, 게임, 이모티콘, 일정 메시지는 아직 구현하지 않았습니다. 각 기능을 시작하기 전에 필드·성공 응답·오류·수신 대상부터 추가 합의합니다. 서버 저장 방식도 별도 합의합니다.
+1주차 서버는 귓속말·게임·이모티콘·일정 메시지를 지원하지 않습니다. 2주차 프론트엔드 구현 규칙은 아래에 정리했습니다. 서버와의 통합 검증 및 남은 정책 합의가 필요하며, 할 일·일정은 3주차에 진행합니다.
+
+## 2주차 프론트엔드 연결 규칙
+
+2026-11-13 김지원 확인: **게임은 시작 시점의 방 전원 참가 방식**을 채택한다. 할 일·일정은 3주차에 진행한다.
+아래는 정윤님의 [노션 제안](https://app.notion.com/p/ChatApp-2-4158c3c90e8c803d9398ee0daebb256e)을 기반으로 구현한 프론트엔드 규칙이다. 게임 인원 방식 외의 시간·보상·저장 정책은 팀원의 서버 구현과 최종 대조가 필요하다. 이 문서 수정만으로 상대방 합의를 대신하지 않는다.
+
+| 방향 | 종류 | 디코딩된 필드 순서 |
+| --- | --- | --- |
+| C → S | GAME_START | 없음 |
+| C → S | GAME_CHOOSE | gameId, choice (ROCK/PAPER/SCISSORS) |
+| S → C | GAME_STARTED | gameId, starter, N, nickname N개 |
+| S → C | GAME_CHOSEN | gameId, nickname |
+| S → C | GAME_RESULT | gameId, N, (nickname, choice) N쌍, M, winner M개 |
+| S → C | GAME_CANCELED | gameId, reason (TIMEOUT/PLAYERS_LEFT) |
+| C → S | EMOTICON_LIST | 없음 |
+| S → C | EMOTICON_OWNED | emoticonId 반복 (없으면 필드 0개) |
+| S → C | EMOTICON_GRANTED | gameId, emoticonId |
+| C → S | EMOTICON_SEND | emoticonId |
+| S → C | EMOTICON_MESSAGE | roomId, sender, emoticonId |
+| C → S | WHISPER_SEND | target, text |
+| S → C | WHISPER_MESSAGE | roomId, from, to, text |
+
+- 게임 시작 당시 방의 두 명 이상이 참가한다. 중도 입장자는 해당 판에 자동 참가하지 않고 결과를 관전한다. 퇴장한 참가자는 선택 현황에서 제외한다.
+- GAME_CHOSEN에는 선택값이 없다. 화면은 제출 여부만 표시하고, GAME_RESULT에서만 선택값과 서버가 정한 승자를 공개한다. 복수 승자와 M=0 무승부를 지원한다.
+- 7초 제한은 자신의 즉시 응답 대기에만 적용한다. 다른 사용자의 GAME_CHOSEN이나 EMOTICON_MESSAGE, 보상 이벤트로 내 요청을 완료 처리하지 않는다. 선택 응답 후 결과 대기에는 7초 타이머를 사용하지 않는다.
+- 노션의 30초 선택 제한과 시간 초과 시 미선택자 제외·판정·취소는 서버 책임이다. 프론트는 서버 결과를 기다리며 로컬 타이머로 승패를 결정하지 않는다.
+- 게임 이벤트는 노션 형식상 roomId가 없다. 서버는 퇴장자의 과거 방 게임 이벤트를 ROOM_LEFT 이후 전달하지 않아야 한다. 프론트는 이미 알고 있던 종료·퇴장 게임 ID의 중복 이벤트를 무시하지만, 처음 보는 gameId만으로 방을 구별할 수 없다. 실제 통합에서 이 순서를 확인한다.
+- GAME_STARTED 없이 결과만 받는 중도 입장 관전자도 지원한다.
+- 이모티콘은 노션의 E01~E08 목록에 캐릭터 그림을 대응시켰다. 보유 목록·보상은 서버 응답으로만 갱신하고 서버가 보내지 않은 보상은 만들지 않는다. 네트워크로는 그림 파일 대신 기존 ID만 보내고, 클라이언트에서 같은 ID의 그림을 표시한다.
+- 승자당 한 번 지급, 미보유 항목 중 무작위 지급, 닉네임 기준 서버 메모리 보관, 재시작 시 초기화는 노션의 서버 정책 제안이다. 프론트 검사는 이 정책의 서버 구현을 검증한 것이 아니다.
+- 귓속말은 같은 방의 다른 사용자에게만 보내며 본문 규칙은 CHAT_SEND와 같다. 서버는 발신자와 수신자에게만 이벤트를 전달해야 한다.
+- 실패 시 ERROR(code, description)를 수신한다. 기존 1주차 서버는 2주차 요청을 지원하지 않으므로 팀원 서버가 준비된 뒤 통합한다.

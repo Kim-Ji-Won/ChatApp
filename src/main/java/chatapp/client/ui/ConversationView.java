@@ -13,7 +13,7 @@ import java.util.function.Consumer;
 
 /** 대화 내용을 평문으로 보관하고 가변 너비 말풍선으로 표시한다. 시각은 이 클라이언트 수신 시각. */
 public final class ConversationView extends JComponent implements Scrollable {
-    private record Entry(String sender, String text, boolean mine, boolean notice, String time, long arrivedAt) { }
+    private record Entry(String sender, String text, boolean mine, boolean notice, String time, long arrivedAt, String emoticonId) { }
     private record Lines(List<TextLayout> layouts, float width, float height) { }
     private static final Font BODY = new Font("SansSerif", Font.PLAIN, 14);
     private static final Font SMALL = new Font("SansSerif", Font.PLAIN, 11);
@@ -36,9 +36,16 @@ public final class ConversationView extends JComponent implements Scrollable {
         menu.add(copy); setComponentPopupMenu(menu);
     }
     public void addMessage(String sender, String text, boolean mine) {
-        append(new Entry(sender, text, mine, false, LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")), System.currentTimeMillis()));
+        append(new Entry(sender, text, mine, false, LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")), System.currentTimeMillis(), null));
     }
-    public void addNotice(String text) { append(new Entry("", text, false, true, "", System.currentTimeMillis())); }
+    public void addEmoticon(String sender, String id, boolean mine) {
+        try { EmoticonPicker.validate(id); }
+        catch (java.io.IOException e) { throw new IllegalArgumentException(e.getMessage(), e); }
+        // 복사·접근성용 설명과 그림 ID를 함께 보관한다. 일반 채팅 문자열은 그림으로 해석하지 않는다.
+        append(new Entry(sender, "[이모티콘: " + EmoticonPicker.label(id) + "]", mine, false,
+                LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")), System.currentTimeMillis(), id));
+    }
+    public void addNotice(String text) { append(new Entry("", text, false, true, "", System.currentTimeMillis(), null)); }
     public void clear() {
         revision++; scrollPending=false; entries.clear(); setUnseen(false);
         if (scrollPane!=null) scrollPane.getViewport().setViewPosition(new Point());
@@ -134,9 +141,10 @@ public final class ConversationView extends JComponent implements Scrollable {
                 y += h+16;
                 continue;
             }
-            Lines lines = wrap(entry.text, Math.max(100,Math.min(420,width-180)),BODY);
-            int bubbleWidth = (int)Math.ceil(lines.width)+28;
-            int bubbleHeight = (int)Math.ceil(lines.height)+16;
+            boolean sticker=entry.emoticonId != null;
+            Lines lines = sticker ? null : wrap(entry.text, Math.max(100,Math.min(420,width-180)),BODY);
+            int bubbleWidth = sticker ? 112 : (int)Math.ceil(lines.width)+28;
+            int bubbleHeight = sticker ? 112 : (int)Math.ceil(lines.height)+16;
             int x = entry.mine ? width-26-bubbleWidth : 72;
             int top = y+(entry.mine || continued ? 0 : 21);
             if (graphics != null) {
@@ -145,6 +153,9 @@ public final class ConversationView extends JComponent implements Scrollable {
                     graphics.setFont(SMALL); graphics.setColor(new Color(0x60747A));
                     graphics.drawString(entry.sender,72,y+11);
                 }
+                if (sticker) {
+                    new EmoticonIcon(entry.emoticonId,112).paintIcon(this,graphics,x,top);
+                } else {
                 graphics.setColor(entry.mine ? Theme.YELLOW : Color.WHITE);
                 graphics.fillRoundRect(x,top,bubbleWidth,bubbleHeight,20,20);
                 Path2D tail = new Path2D.Float();
@@ -152,6 +163,7 @@ public final class ConversationView extends JComponent implements Scrollable {
                 else { tail.moveTo(x+7,top+7); tail.lineTo(x-5,top+5); tail.lineTo(x+2,top+18); }
                 tail.closePath(); if (!continued) graphics.fill(tail);
                 graphics.setColor(Theme.INK); drawLines(graphics,lines,x+14,top+8);
+                }
                 graphics.setFont(SMALL); graphics.setColor(new Color(0x73868C));
                 int timeX = entry.mine ? x-38 : x+bubbleWidth+8;
                 if (!continues) graphics.drawString(entry.time,timeX,top+bubbleHeight-3);
@@ -178,6 +190,13 @@ public final class ConversationView extends JComponent implements Scrollable {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON);
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
         render(g,getWidth()); g.dispose();
+    }
+    @Override public javax.accessibility.AccessibleContext getAccessibleContext() {
+        if (accessibleContext == null) accessibleContext = new AccessibleJComponent() {
+            @Override public String getAccessibleName() { return "채팅 대화"; }
+            @Override public String getAccessibleDescription() { return getText(); }
+        };
+        return accessibleContext;
     }
     @Override public Dimension getPreferredSize() { return new Dimension(availableWidth(),render(null,availableWidth())); }
     @Override public Dimension getPreferredScrollableViewportSize() { return new Dimension(680,440); }
