@@ -3,14 +3,21 @@ package chatapp.server;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Random;
 
 /** 채팅 서버. 연결마다 스레드를 하나씩 둔다. 실행: ChatServer [port] (기본 5000) */
 public final class ChatServer {
     private final ServerSocket serverSocket;
-    private final Hub hub = new Hub();
+    private final Hub hub;
 
     public ChatServer(int port) throws IOException {
+        this(port, 30_000, new Random());
+    }
+
+    /** 테스트에서 가위바위보 선택 제한 시간과 이모티콘 추첨 난수를 조정할 수 있게 하는 생성자. */
+    public ChatServer(int port, long gameChoiceTimeoutMillis, Random random) throws IOException {
         this.serverSocket = new ServerSocket(port);
+        this.hub = new Hub(gameChoiceTimeoutMillis, random);
     }
 
     public int port() {
