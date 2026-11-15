@@ -20,6 +20,19 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
     private final JPanel conversationPages = Theme.panel(conversationCards);
     private final JPanel membersPanel = new JPanel(new BorderLayout(0, 18));
     private final JButton membersToggle = namedButton("membersToggle", "멤버 0명 ▾", false);
+    private final JButton whisper = namedButton("whisper", "귓속말", false);
+    private final WhisperComposer whisperComposer = new WhisperComposer(this::sendWhisper);
+    private String pendingWhisperTarget;
+    private String pendingWhisperBody;
+    private final JButton toolsToggle = namedButton("toolsToggle", "+", false);
+    private final JPanel composerTools = Theme.panel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+    private final JButton game = namedButton("game", "가위바위보", false);
+    private final JButton emoticons = namedButton("emoticons", "이모티콘", false);
+    private final RoomGameView gameView = new RoomGameView(this::startGame, this::chooseGame, this::gameResultRevealed);
+    private final EmoticonPicker emoticonPicker = new EmoticonPicker(this::loadEmoticons, this::sendEmoticon);
+    private final Set<String> rewardedGames = new LinkedHashSet<>();
+    private String pendingGame;
+    private String pendingEmoticon;
     private Message afterLeave;
     private final JTextField host = Theme.field("host", "127.0.0.1");
     private final JTextField port = Theme.field("port", "5000");
@@ -140,6 +153,23 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
             membersPanel.setVisible(!membersPanel.isVisible()); updateMembers();
             conversationPages.revalidate(); conversationPages.repaint();
         });
+        whisper.addActionListener(event -> {
+            emoticonPicker.setVisible(false); hideComposerTools();
+            whisperComposer.open(); conversationPages.revalidate(); conversationPages.repaint();
+        });
+        toolsToggle.addActionListener(event -> {
+            boolean show=!composerTools.isVisible();
+            emoticonPicker.setVisible(false); whisperComposer.setVisible(false);
+            composerTools.setVisible(show); toolsToggle.setText(show ? "×" : "+");
+            conversationPages.revalidate(); conversationPages.repaint();
+        });
+        game.addActionListener(event -> { hideComposerTools(); emoticonPicker.setVisible(false); gameView.setVisible(!gameView.isVisible()); });
+        emoticons.addActionListener(event -> {
+            boolean show=!emoticonPicker.isVisible(); hideComposerTools(); whisperComposer.setVisible(false);
+            emoticons.setText("이모티콘"); emoticonPicker.setVisible(show);
+            if(show) { gameView.setVisible(false); loadEmoticons(); }
+            conversationPages.revalidate(); conversationPages.repaint();
+        });
         send.addActionListener(event -> sendChat());
         messageInput.addActionListener(event -> sendChat());
         messageInput.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
@@ -150,6 +180,10 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         newMessages.addActionListener(event -> transcript.jumpToLatest());
         updateButtons();
     }
+
+    private void gameResultRevealed(String summary) { transcript.addNotice(summary); }
+
+    private void hideComposerTools() { composerTools.setVisible(false); toolsToggle.setText("+"); }
 
     private JPanel connectionPage() {
         JPanel outer = Theme.panel(new GridBagLayout());
@@ -175,34 +209,41 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
     }
     private JPanel lobbyPage() {
         JPanel panel = Theme.panel(new BorderLayout());
-        JPanel conversations = new JPanel(new BorderLayout(0, 14)); conversations.setBackground(Color.WHITE);
-        conversations.setPreferredSize(new Dimension(320, 0));
-        conversations.setBorder(new EmptyBorder(18, 20, 16, 20));
-        JPanel tools = Theme.panel(new BorderLayout(0, 16));
+        JPanel conversations = new JPanel(new BorderLayout(0, 12)); conversations.setBackground(Color.WHITE);
+        conversations.setName("conversations");
+        conversations.setPreferredSize(new Dimension(270, 0));
+        conversations.setBorder(new EmptyBorder(16, 14, 14, 14));
+        JPanel tools = Theme.panel(new BorderLayout(0, 12));
         JPanel heading = Theme.panel(new BorderLayout());
-        heading.add(Theme.label("채팅", 26, true), BorderLayout.WEST);
+        heading.add(Theme.label("채팅", 24, true), BorderLayout.WEST);
+        newConversation.setFont(new Font("SansSerif", Font.BOLD, 12));
+        newConversation.setBorder(new EmptyBorder(9, 12, 9, 12));
         heading.add(newConversation, BorderLayout.EAST); tools.add(heading, BorderLayout.NORTH);
         roomSearch.putClientProperty("placeholder", "대화 이름으로 찾기");
+        roomSearch.setFont(new Font("SansSerif", Font.PLAIN, 13));
+        roomSearch.setBorder(new EmptyBorder(10, 12, 10, 12));
         roomSearch.setToolTipText("현재 대화 목록에서 이름으로 검색합니다.");
         tools.add(roomSearch, BorderLayout.CENTER);
         roomName.putClientProperty("placeholder", "예: 오늘 뭐 먹지?");
+        roomName.setBorder(new EmptyBorder(10, 12, 10, 12));
+        create.setBorder(new EmptyBorder(9, 12, 9, 12));
         createRoomPanel.setBorder(new EmptyBorder(4, 0, 2, 0));
         createRoomPanel.add(Theme.label("어떤 이름으로 이야기할까요?", 12, true), BorderLayout.NORTH);
         createRoomPanel.add(roomName, BorderLayout.CENTER);
         createRoomPanel.add(create, BorderLayout.SOUTH); createRoomPanel.setVisible(false);
         tools.add(createRoomPanel, BorderLayout.SOUTH); conversations.add(tools, BorderLayout.NORTH);
         roomList.setName("roomList"); roomList.setBackground(Color.WHITE);
-        roomList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION); roomList.setFixedCellHeight(72);
+        roomList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION); roomList.setFixedCellHeight(68);
         roomList.setCellRenderer((list, room, index, selected, focus) -> {
-            JPanel cell = Theme.rounded(new BorderLayout(12, 0), room.id().equals(currentRoom) ? new Color(0xFFF6CE) : Color.WHITE, 20);
+            JPanel cell = Theme.rounded(new BorderLayout(9, 0), room.id().equals(currentRoom) ? new Color(0xFFF6CE) : Color.WHITE, 20);
             // Open-room state and keyboard selection are independent during a room switch.
             if (selected && list.hasFocus()) {
                 cell.setBorder(BorderFactory.createCompoundBorder(
-                        BorderFactory.createLineBorder(Theme.BORDER), new EmptyBorder(10, 7, 10, 7)));
-            } else cell.setBorder(new EmptyBorder(11, 8, 11, 8));
-            cell.add(new JLabel(Theme.avatar(room.name(), 42)), BorderLayout.WEST);
+                        BorderFactory.createLineBorder(Theme.BORDER), new EmptyBorder(9, 7, 9, 7)));
+            } else cell.setBorder(new EmptyBorder(10, 8, 10, 8));
+            cell.add(new JLabel(Theme.avatar(room.name(), 36)), BorderLayout.WEST);
             JPanel words = Theme.panel(new BorderLayout(0, 4));
-            JPanel titleRow = Theme.panel(new BorderLayout(8, 0));
+            JPanel titleRow = Theme.panel(new BorderLayout(6, 0));
             JLabel title = Theme.label(room.name(), 14, true); titleRow.add(title, BorderLayout.CENTER);
             String time = recentTimes.get(room.id());
             JLabel meta = Theme.label(time != null ? time : room.count()+"명", 10, false);
@@ -212,6 +253,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
             JLabel preview = Theme.label(draft != null ? "[작성 중] " + draft : recentMessages.getOrDefault(room.id(), "들어가서 첫 인사를 나눠보세요"), 12, false);
             preview.setForeground(draft != null ? new Color(0xA97824) : Theme.MUTED); words.add(preview, BorderLayout.CENTER);
             cell.add(words, BorderLayout.CENTER);
+            cell.setToolTipText("대화: " + room.name() + " / " + preview.getText());
             cell.setSize(Math.max(list.getWidth(), 200), list.getFixedCellHeight());
             cell.doLayout(); words.doLayout(); titleRow.doLayout();
             return cell;
@@ -224,7 +266,8 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         listArea.add(emptyRooms, BorderLayout.SOUTH); conversations.add(listArea, BorderLayout.CENTER);
         JPanel footer = Theme.panel(new BorderLayout(8, 0));
         refresh.setText("목록 갱신"); refresh.setToolTipText("서버에서 최신 대화 목록을 받아옵니다.");
-        refresh.setBorder(new EmptyBorder(8, 10, 8, 10));
+        refresh.setFont(new Font("SansSerif", Font.BOLD, 12));
+        refresh.setBorder(new EmptyBorder(7, 9, 7, 9));
         footer.add(refresh, BorderLayout.EAST);
         conversations.add(footer, BorderLayout.SOUTH); panel.add(conversations, BorderLayout.WEST);
         JPanel welcome = new JPanel(new GridBagLayout()); welcome.setBackground(Theme.CHAT);
@@ -252,7 +295,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
             if (selected != null && selected.id().equals(room.id())) roomList.setSelectedValue(room, true);
         }
         roomCount.setText(query.isEmpty() ? "대화 "+roomModel.size() : "검색 결과 "+roomModel.size());
-        emptyRooms.setText(query.isEmpty() ? "새 대화를 만들고 첫 인사를 나눠보세요." : "찾는 대화가 없어요. 다른 이름으로 찾아보세요.");
+        emptyRooms.setText(query.isEmpty() ? "새 대화를 만들고 인사를 나눠보세요." : "다른 대화 이름으로 검색해 보세요.");
         emptyRooms.setVisible(roomModel.isEmpty()); updateButtons();
     }
     private JPanel chatPage() {
@@ -264,7 +307,9 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         JPanel actions = Theme.panel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
         membersToggle.setBorder(new EmptyBorder(10, 12, 10, 12)); leave.setBorder(new EmptyBorder(10, 12, 10, 12));
         actions.add(membersToggle); actions.add(leave); heading.add(actions, BorderLayout.EAST);
-        conversation.add(heading, BorderLayout.NORTH);
+        JPanel chatHeader = Theme.panel(new BorderLayout());
+        chatHeader.add(heading, BorderLayout.NORTH); chatHeader.add(gameView, BorderLayout.CENTER);
+        conversation.add(chatHeader, BorderLayout.NORTH);
         JScrollPane messages = new JScrollPane(transcript); messages.setBorder(null);
         messages.setName("messageScroll");
         messages.getViewport().setBackground(Theme.CHAT); messages.getVerticalScrollBar().setUnitIncrement(24);
@@ -274,6 +319,14 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         composer.setBorder(new EmptyBorder(10, 10, 10, 10));
         messageInput.putClientProperty("placeholder", "메시지를 입력하세요");
         messageInput.setToolTipText("메시지 1~1000자 · Enter로 보내기");
+        JPanel inputActions=Theme.panel(new FlowLayout(FlowLayout.LEFT,4,0));
+        toolsToggle.setToolTipText("게임과 귓속말 열기");
+        toolsToggle.getAccessibleContext().setAccessibleName("대화 도구 열기");
+        toolsToggle.setFont(new Font("SansSerif",Font.PLAIN,22));
+        toolsToggle.setBorder(new EmptyBorder(5,12,5,12));
+        emoticons.setBorder(new EmptyBorder(11,10,11,10));
+        inputActions.add(toolsToggle); inputActions.add(emoticons);
+        composer.add(inputActions, BorderLayout.WEST);
         composer.add(messageInput, BorderLayout.CENTER); composer.add(send, BorderLayout.EAST);
         JPanel jumpRow = Theme.panel(new FlowLayout(FlowLayout.CENTER, 0, 0));
         jumpRow.setBorder(new EmptyBorder(0, 0, 8, 0)); jumpRow.add(newMessages); jumpRow.setVisible(false);
@@ -283,7 +336,17 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
             composerWrap.revalidate(); composerWrap.repaint();
         });
         composerWrap.add(jumpRow, BorderLayout.NORTH);
-        composerWrap.add(composer, BorderLayout.CENTER); conversation.add(composerWrap, BorderLayout.SOUTH);
+        composerWrap.add(composer, BorderLayout.CENTER);
+        JPanel extras = Theme.panel(new BorderLayout());
+        composerTools.setName("composerTools"); composerTools.setBorder(new EmptyBorder(10,0,4,0));
+        game.setIcon(new GameHandIcon("ROCK",28)); composerTools.add(game); composerTools.add(whisper);
+        composerTools.setVisible(false);
+        extras.add(composerTools, BorderLayout.NORTH);
+        JPanel drawers=Theme.panel(new BorderLayout());
+        drawers.add(emoticonPicker, BorderLayout.NORTH); drawers.add(whisperComposer, BorderLayout.CENTER);
+        extras.add(drawers, BorderLayout.CENTER);
+        composerWrap.add(extras, BorderLayout.SOUTH);
+        conversation.add(composerWrap, BorderLayout.SOUTH);
         panel.add(conversation, BorderLayout.CENTER);
         JPanel side = membersPanel; side.setName("membersPanel"); side.setBackground(new Color(0xF6F5F1));
         side.setBorder(new EmptyBorder(24, 18, 20, 18)); side.setPreferredSize(new Dimension(170, 0));
@@ -297,14 +360,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         });
         JScrollPane userScroll = new JScrollPane(users); userScroll.setBorder(null);
         userScroll.getViewport().setBackground(side.getBackground()); side.add(userScroll, BorderLayout.CENTER);
-        JPanel features = Theme.panel(new GridLayout(5, 1, 0, 8));
-        features.add(Theme.label("함께 더 즐겁게", 13, true));
-        JLabel soon = Theme.label("새로운 기능을 준비 중이에요", 10, false); soon.setForeground(Theme.MUTED); features.add(soon);
-        for (String title : List.of("미니게임", "이모티콘", "일정 공유")) {
-            JButton button = Theme.button(title, false); button.setEnabled(false);
-            button.setToolTipText("준비 중인 기능입니다."); features.add(button);
-        }
-        side.add(features, BorderLayout.SOUTH); side.setVisible(false); panel.add(side, BorderLayout.EAST); return panel;
+        side.setVisible(false); panel.add(side, BorderLayout.EAST); return panel;
     }
 
     private void start(boolean demoMode) {
@@ -375,6 +431,34 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         if (!validText(body, 1000)) { info("메시지는 제어문자 없이 1~1000자로 입력해 주세요.", true); return; }
         request(Message.of("CHAT_SEND", body), "chat");
     }
+    private void startGame() {
+        if (!connected || currentRoom == null || pending != null || gameView.gameId() != null) return;
+        if (userModel.size() < 2) { info("두 명 이상 모이면 시작할 수 있어요.", true); return; }
+        request(Message.of("GAME_START"), "game-start");
+    }
+    private void chooseGame(String choice) {
+        if (pending != null || !connected || currentRoom == null || !gameView.canChoose()) return;
+        pendingGame = gameView.gameId();
+        request(Message.of("GAME_CHOOSE", pendingGame, choice), "game-choose");
+    }
+    private void loadEmoticons() {
+        if (connected && currentRoom != null && pending == null) request(Message.of("EMOTICON_LIST"), "emoticon-list");
+    }
+    private void sendEmoticon(String id) {
+        if (!connected || currentRoom == null || pending != null || !emoticonPicker.owns(id)) return;
+        pendingEmoticon = id; request(Message.of("EMOTICON_SEND", id), "emoticon-send");
+    }
+    private void sendWhisper(String target, String body) {
+        if (!connected || pending != null || currentRoom == null) return;
+        if (target == null || target.equals(self) || !userModel.contains(target)) {
+            info("같은 방에 있는 귓속말 상대를 선택해 주세요.", true); return;
+        }
+        if (!validText(body, 1000)) {
+            info("귓속말은 제어문자 없이 1~1000자로 입력해 주세요.", true); return;
+        }
+        pendingWhisperTarget = target; pendingWhisperBody = body;
+        request(Message.of("WHISPER_SEND", target, body), "whisper");
+    }
     private void request(Message message, String operation) {
         if (!connected || pending != null) return;
         info("", false);
@@ -419,6 +503,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
                 case "ROOM_JOINED" -> {
                     message.requireFields(2);
                     currentRoom = message.field(0); roomTitle.setText(message.field(1));
+                    whisperComposer.clear(); gameView.clearRoom(); emoticonPicker.setVisible(false); hideComposerTools();
                     transcript.clear(); userModel.clear(); userTitle.setText("함께 대화 중");
                     String draft = drafts.getOrDefault(currentRoom, "");
                     messageInput.setText(draft); roomName.setText("");
@@ -434,6 +519,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
                 }
                 case "ROOM_LEFT" -> {
                     message.requireFields(0); saveDraft(); currentRoom = null; roomList.repaint();
+                    whisperComposer.clear(); gameView.clearRoom(); emoticonPicker.setVisible(false); hideComposerTools();
                     userModel.clear(); transcript.clear(); messageInput.setText("");
                     conversationCards.show(conversationPages, "empty"); finish("leave"); info("로비로 돌아왔습니다.", false);
                     membersPanel.setVisible(false); updateMembers();
@@ -445,6 +531,8 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
                     if (Objects.equals(currentRoom, message.field(0))) {
                         userModel.clear();
                         message.fields().subList(1, message.fields().size()).forEach(userModel::addElement);
+                        whisperComposer.updateTargets(Collections.list(userModel.elements()), self);
+                        gameView.membersChanged(Collections.list(userModel.elements()));
                         updateMembers();
                     }
                 }
@@ -461,12 +549,75 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
                         }
                     }
                 }
+                case "GAME_STARTED" -> {
+                    if (currentRoom != null && gameView.started(message)) {
+                        emoticonPicker.setVisible(false); hideComposerTools();
+                        transcript.addNotice(message.field(1) + "님이 가위바위보를 시작했어요");
+                        if (Objects.equals(self, message.field(1))) finish("game-start");
+                    }
+                }
+                case "GAME_CHOSEN" -> {
+                    if (currentRoom != null && gameView.chosen(message) && Objects.equals(self, message.field(1))
+                            && Objects.equals(pendingGame, message.field(0))) {
+                        finish("game-choose"); pendingGame = null;
+                    }
+                }
+                case "GAME_RESULT", "GAME_CANCELED" -> {
+                    if (currentRoom != null) {
+                        String result = message.type().equals("GAME_RESULT") ? gameView.result(message) : gameView.canceled(message);
+                        if (result != null) {
+                            emoticonPicker.setVisible(false); hideComposerTools();
+                            if (message.type().equals("GAME_CANCELED")) transcript.addNotice(result);
+                            if (Objects.equals(pendingGame, message.field(0))) { finish("game-choose"); pendingGame = null; }
+                        }
+                    }
+                }
+                case "EMOTICON_OWNED" -> { emoticonPicker.owned(message); finish("emoticon-list"); }
+                case "EMOTICON_GRANTED" -> {
+                    message.requireFields(2); EmoticonPicker.validate(message.field(1));
+                    if (rewardedGames.add(message.field(0))) {
+                        if (rewardedGames.size() > 300) rewardedGames.remove(rewardedGames.iterator().next());
+                        emoticonPicker.granted(message.field(1));
+                        // 보상은 계정에 도착하는 이벤트이므로 방 밖에서도 보유 목록에 반영한다.
+                        if (currentRoom != null) transcript.addNotice("새 이모티콘을 받았어요 · " + EmoticonPicker.label(message.field(1)));
+                        emoticons.setText("이모티콘 · 새 보상");
+                    }
+                }
+                case "EMOTICON_MESSAGE" -> {
+                    message.requireFields(3); EmoticonPicker.validate(message.field(2));
+                    if (Objects.equals(currentRoom, message.field(0))) {
+                        transcript.addEmoticon(message.field(1), message.field(2), Objects.equals(self, message.field(1)));
+                        recentMessages.put(currentRoom, (Objects.equals(self,message.field(1)) ? "나" : message.field(1))
+                                + ": [이모티콘] " + EmoticonPicker.label(message.field(2)));
+                        recentTimes.put(currentRoom, java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")));
+                        recentActivity.put(currentRoom, ++activitySequence); filterRooms();
+                        if (Objects.equals(self, message.field(1)) && Objects.equals(pendingEmoticon, message.field(2))) {
+                            finish("emoticon-send"); pendingEmoticon = null;
+                        }
+                    }
+                }
+                case "WHISPER_MESSAGE" -> {
+                    message.requireFields(4);
+                    String room = message.field(0), from = message.field(1), to = message.field(2), body = message.field(3);
+                    if (Objects.equals(currentRoom, room) && (Objects.equals(self, from) || Objects.equals(self, to))) {
+                        boolean mine = Objects.equals(self, from);
+                        String label = mine ? "귓속말 · " + to + "님에게" : "귓속말 · " + from + "님에게서";
+                        transcript.addMessage(label, "[" + label + "]\n" + body, mine);
+                        if (mine && "whisper".equals(pending) && Objects.equals(to, pendingWhisperTarget)
+                                && Objects.equals(body, pendingWhisperBody)) {
+                            whisperComposer.acknowledge(to, body); finish("whisper");
+                            pendingWhisperTarget = null; pendingWhisperBody = null;
+                            info("귓속말을 전송했습니다.", false);
+                        }
+                    }
+                }
                 case "SYSTEM" -> {
                     message.requireFields(2);
                     if (Objects.equals(currentRoom, message.field(0))) transcript.addNotice(message.field(1));
                 }
                 case "ERROR" -> {
-                    message.requireFields(2); timeout.stop(); pending = null; afterLeave = null;
+                    message.requireFields(2); gameView.choiceRejected(); timeout.stop(); pending = null; afterLeave = null;
+                    pendingWhisperTarget = null; pendingWhisperBody = null; pendingGame = null; pendingEmoticon = null;
                     info(message.field(1) + " (" + message.field(0) + ")", true);
                 }
                 default -> info("미지원 서버 메시지: " + message.type(), true);
@@ -490,11 +641,20 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         refresh.setEnabled(ready); roomName.setEnabled(ready);
         leave.setEnabled(ready && currentRoom != null); send.setEnabled(ready && currentRoom != null);
         membersToggle.setEnabled(connected && currentRoom != null);
+        toolsToggle.setEnabled(connected && currentRoom != null);
         messageInput.setEnabled(connected && currentRoom != null);
+        whisper.setEnabled(ready && currentRoom != null);
+        whisperComposer.setReady(ready && currentRoom != null);
+        game.setEnabled(connected && currentRoom != null); emoticons.setEnabled(ready && currentRoom != null);
+        gameView.setReady(ready && currentRoom != null, self, userModel.size());
+        emoticonPicker.setReady(ready && currentRoom != null);
     }
     private void connectionLost(String reason) { reset(); info(reason, true); }
     private void reset() {
         session++; timeout.stop();
+        hideComposerTools(); gameView.reset(); emoticonPicker.reset(); rewardedGames.clear(); pendingGame = null; pendingEmoticon = null;
+        emoticons.setText("이모티콘");
+        whisperComposer.clear(); pendingWhisperTarget = null; pendingWhisperBody = null;
         if (transport != null) transport.close();
         transport = null; connected = false; connecting = false; pending = null; currentRoom = null; afterLeave = null;
         allRooms.clear(); recentMessages.clear(); recentTimes.clear(); recentActivity.clear(); drafts.clear(); activitySequence=0; roomSearch.setText("");

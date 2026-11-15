@@ -25,6 +25,10 @@ public final class FrontendChecks {
         draftChecks();
         socketUiChecks();
         rejectedLoginCheck();
+        whisperUiChecks();
+        gameUiChecks();
+        animatedDemoChecks();
+        stickerRenderingChecks();
         System.out.println("PASS: " + checks + " checks. Screenshots: build/screenshots/");
     }
     private static List<String> highlightedRooms(ChatPanel panel) throws Exception {
@@ -312,10 +316,279 @@ public final class FrontendChecks {
             check(ui(() -> field(panel,"messageInput").getText()).isEmpty(),"다른 세션에 초안 전달하지 않음");
         } finally { edt(() -> { panel.close(); return null; }); }
     }
-    private static void snapshot(ChatPanel panel, String name) throws Exception {
+    private static void whisperUiChecks() throws Exception {
+        try (ServerSocket server = new ServerSocket(0, 10, InetAddress.getLoopbackAddress())) {
+            BlockingQueue<Message> requests = new LinkedBlockingQueue<>();
+            CompletableFuture<DataOutputStream> response = new CompletableFuture<>();
+            FutureTask<Void> fixture = new FutureTask<>(() -> {
+                try (Socket socket = server.accept()) {
+                    socket.setSoTimeout(10000);
+                    DataInputStream in = new DataInputStream(socket.getInputStream());
+                    DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                    Message.read(in);
+                    Message.of("WELCOME", "김지원").write(out);
+                    Message.of("ROOMS", "r1", "귓속말 테스트", "2").write(out);
+                    if (!Message.read(in).equals(Message.of("ROOM_JOIN", "r1"))) throw new AssertionError("입장 요청");
+                    Message.of("ROOM_JOINED", "r1", "귓속말 테스트").write(out);
+                    Message.of("ROOM_USERS", "r1", "김지원", "정윤", "민수").write(out);
+                    response.complete(out);
+                    try { while (true) requests.add(Message.read(in)); } catch (EOFException expected) { }
+                }
+                return null;
+            });
+            Thread worker = new Thread(fixture, "whisper-tcp-fixture"); worker.setDaemon(true); worker.start();
+            ChatPanel panel = edt(ChatPanel::new);
+            try {
+                set(panel, "nickname", "김지원"); set(panel, "host", server.getInetAddress().getHostAddress());
+                set(panel, "port", String.valueOf(server.getLocalPort())); click(panel, "connect");
+                await(() -> listSize(panel, "roomList") == 1, "귓속말 TCP 접속");
+                selectRoom(panel, "귓속말 테스트"); openSelected(panel);
+                await(() -> listSize(panel, "users") == 3, "귓속말 참가자 목록");
+                DataOutputStream out = response.get(5, TimeUnit.SECONDS);
+                click(panel, "whisper");
+                check(ui(() -> ((JComboBox<?>)find(panel,"whisperTarget")).getItemCount()) == 2, "자신을 귓속말 대상에서 제외");
+                set(panel,"whisperInput","비밀 이야기"); click(panel,"sendWhisper");
+                check(status(panel).contains("상대"), "대상 미선택 시 전송 차단");
+                edt(() -> { ((JComboBox<?>) find(panel,"whisperTarget")).setSelectedItem("정윤"); return null; });
+                set(panel,"messageInput","전체 대화 초안"); click(panel,"sendWhisper");
+                check(Message.of("WHISPER_SEND","정윤","비밀 이야기").equals(requests.poll(5,TimeUnit.SECONDS)), "노션 규칙대로 귓속말 전송");
+                check(!textArea(panel).contains("비밀 이야기"), "서버 응답 전에 전송 성공으로 표시하지 않음");
+                Message.of("WHISPER_MESSAGE","other","정윤","김지원","다른 방 비밀").write(out);
+                Message.of("WHISPER_MESSAGE","r1","정윤","민수","제삼자 비밀").write(out);
+                Message.of("WHISPER_MESSAGE","r1","정윤","김지원","수신 이야기").write(out);
+                await(() -> textArea(panel).contains("수신 이야기"), "귓속말 수신 표시");
+                check(!textArea(panel).contains("다른 방 비밀") && !textArea(panel).contains("제삼자 비밀"), "다른 방과 제삼자 귓속말 화면 차단");
+                check(!enabled(panel,"sendWhisper"), "수신 귓속말이 내 전송 대기를 끝내지 않음");
+                set(panel,"whisperInput","응답 대기 중 새 초안");
+                Message.of("WHISPER_MESSAGE","r1","김지원","정윤","비밀 이야기").write(out);
+                await(() -> enabled(panel,"sendWhisper"), "자신의 전송 응답으로 대기 종료");
+                check(ui(() -> field(panel,"whisperInput").getText()).equals("응답 대기 중 새 초안"), "늦은 응답에도 새 귓속말 초안 보존");
+                check(ui(() -> field(panel,"messageInput").getText()).equals("전체 대화 초안"), "일반 채팅 초안과 분리");
+                click(panel,"sendWhisper"); requests.poll(5,TimeUnit.SECONDS);
+                Message.of("ERROR","INVALID_TARGET","상대가 방을 나갔습니다.").write(out);
+                await(() -> status(panel).contains("상대가 방을"), "귓속말 오류 안내");
+                check(!ui(() -> field(panel,"whisperInput").getText()).isEmpty(), "실패한 귓속말 초안 보존");
+                Message.of("ROOM_USERS","r1","김지원","민수").write(out);
+                await(() -> listSize(panel,"users") == 2, "상대 퇴장 반영");
+                check(ui(() -> ((JComboBox<?>)find(panel,"whisperTarget")).getSelectedItem()) == null, "상대 퇴장 시 다른 사람 자동 선택 방지");
+                edt(() -> { ((JComboBox<?>) find(panel,"whisperTarget")).setSelectedItem("민수"); return null; });
+                set(panel,"whisperInput","성공 확인"); click(panel,"sendWhisper"); requests.poll(5,TimeUnit.SECONDS);
+                Message.of("WHISPER_MESSAGE","r1","김지원","민수","성공 확인").write(out);
+                await(() -> ui(() -> field(panel,"whisperInput").getText()).isEmpty(), "성공한 귓속말 초안 비우기");
+                snapshot(panel,"08-week2-whisper.png");
+                click(panel,"leave"); requests.poll(5,TimeUnit.SECONDS);
+                Message.of("ROOM_LEFT").write(out);
+                await(() -> !ui(() -> find(panel,"whisperComposer").isVisible()), "방 퇴장 시 귓속말 입력 닫기");
+                check(!enabled(panel,"sendWhisper"), "퇴장 후 귓속말 비활성화");
+            } finally { edt(() -> { panel.close(); return null; }); }
+            fixture.get(5,TimeUnit.SECONDS);
+        }
+    }
+
+    private static void gameUiChecks() throws Exception {
+        try (ServerSocket server = new ServerSocket(0, 10, InetAddress.getLoopbackAddress())) {
+            BlockingQueue<Message> requests = new LinkedBlockingQueue<>();
+            CompletableFuture<DataOutputStream> response = new CompletableFuture<>();
+            FutureTask<Void> fixture = new FutureTask<>(() -> {
+                try (Socket socket = server.accept()) {
+                    socket.setSoTimeout(10000);
+                    DataInputStream in = new DataInputStream(socket.getInputStream());
+                    DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                    Message.read(in); Message.of("WELCOME","김지원").write(out);
+                    Message.of("ROOMS","r1","함께 가위바위보","3").write(out);
+                    Message.read(in); Message.of("ROOM_JOINED","r1","함께 가위바위보").write(out);
+                    Message.of("ROOM_USERS","r1","김지원","정윤","민수").write(out); response.complete(out);
+                    try { while (true) requests.add(Message.read(in)); } catch (EOFException expected) { }
+                }
+                return null;
+            });
+            Thread worker = new Thread(fixture,"game-tcp-fixture"); worker.setDaemon(true); worker.start();
+            ChatPanel panel = edt(ChatPanel::new);
+            try {
+                set(panel,"nickname","김지원"); set(panel,"host",server.getInetAddress().getHostAddress());
+                set(panel,"port",String.valueOf(server.getLocalPort())); click(panel,"connect");
+                await(() -> listSize(panel,"roomList")==1,"게임 TCP 접속");
+                selectRoom(panel,"함께 가위바위보"); openSelected(panel);
+                await(() -> listSize(panel,"users")==3,"게임 세 명 참가 준비");
+                DataOutputStream out = response.get(5,TimeUnit.SECONDS);
+                check(!ui(() -> find(panel,"membersPanel").isVisible()),"멤버 패널을 열지 않고 입력창 도구 사용");
+                check(!ui(() -> find(panel,"composerTools").isVisible()),"대화 도구는 처음에 접힌 상태");
+                set(panel,"messageInput","아직 보내지 않은 이야기");
+                click(panel,"toolsToggle");
+                check(ui(() -> find(panel,"composerTools").isVisible()),"입력창 더하기 버튼으로 도구 펼치기");
+                click(panel,"game");
+                check(ui(() -> find(panel,"gamePanel").isVisible()) && !ui(() -> find(panel,"composerTools").isVisible()),"게임을 열면 도구 메뉴 접기");
+                check(ui(() -> ((JTextField)find(panel,"messageInput")).getText()).equals("아직 보내지 않은 이야기"),"도구를 열어도 채팅 초안 유지");
+                click(panel,"startGame");
+                check(Message.of("GAME_START").equals(requests.poll(5,TimeUnit.SECONDS)),"방 전원 게임 시작 요청");
+                Message.of("GAME_STARTED","g1","김지원","3","김지원","정윤","민수").write(out);
+                await(() -> enabled(panel,"chooseROCK"),"참가자의 선택 버튼 활성화");
+                check(!enabled(panel,"startGame"),"진행 중 재시작 차단");
+                check(ui(() -> ((JButton)find(panel,"chooseROCK")).getIcon()!=null),"손 모양 선택 버튼 표시");
+                snapshot(panel,"11-week2-game-choices.png");
+                click(panel,"chooseROCK");
+                check(Message.of("GAME_CHOOSE","g1","ROCK").equals(requests.poll(5,TimeUnit.SECONDS)),"게임 ID와 선택 전송");
+                Message.of("GAME_CHOSEN","g1","정윤").write(out);
+                await(() -> label(panel,"gameStatus").contains("1/3"),"다른 참가자의 선택 완료 표시");
+                check(!enabled(panel,"send"),"타인의 선택 완료로 내 요청 대기를 끝내지 않음");
+                Message.of("GAME_CHOSEN","g1","김지원").write(out);
+                await(() -> enabled(panel,"send"),"내 선택 응답 후 일반 채팅 가능");
+                check(!enabled(panel,"choosePAPER"),"선택 후 중복 제출 차단");
+                check(ui(() -> {
+                    var f=ChatPanel.class.getDeclaredField("timeout"); f.setAccessible(true);
+                    return !((javax.swing.Timer)f.get(panel)).isRunning();
+                }),"게임 결과 대기 중 7초 연결 종료 타이머 해제");
+                check(ui(() -> ((JComponent)find(panel,"gameStage")).getClientProperty("phase")).equals("waiting"),"서버 결과 전에는 대기 연출 유지");
+                click(panel,"closeGame");
+                check(!gameAnimationRunning(panel),"게임을 접으면 애니메이션 타이머 중지");
+                click(panel,"toolsToggle"); click(panel,"game");
+                check(gameAnimationRunning(panel),"진행 중 게임을 다시 열면 대기 애니메이션 재개");
+                snapshot(panel,"09-week2-game-waiting.png");
+                set(panel,"messageInput","게임하면서 대화해요"); click(panel,"send"); requests.poll(5,TimeUnit.SECONDS);
+                Message.of("GAME_CHOSEN","g1","민수").write(out);
+                Message.of("GAME_RESULT","g1","3","김지원","ROCK","정윤","SCISSORS","민수","SCISSORS","1","김지원").write(out);
+                Message.of("EMOTICON_GRANTED","g1","E03").write(out);
+                Message.of("EMOTICON_GRANTED","g1","E03").write(out);
+                await(() -> textArea(panel).contains("새 이모티콘"),"서버 결과와 보상 수신");
+                check(ui(() -> ((JComponent)find(panel,"gameStage")).getClientProperty("phase")).equals("reveal"),"서버 결과 수신 후에만 공개 애니메이션 시작");
+                await(() -> ui(() -> ((JComponent)find(panel,"gameStage")).getClientProperty("phase")).equals("result"),"짧은 공개 연출 후 참가자별 결과 카드 표시");
+                check(label(panel,"gameStatus").equals("승리 · 김지원"),"서버가 보낸 승자 표시");
+                check(!gameAnimationRunning(panel),"결과 공개 후 타이머 종료");
+                snapshot(panel,"12-week2-game-result.png");
+                check(textArea(panel).split("새 이모티콘",-1).length==2,"중복 보상 이벤트 안내 1회");
+                check(!enabled(panel,"send"),"게임 결과와 보상이 채팅 응답 대기를 지우지 않음");
+                Message.of("CHAT_MESSAGE","r1","김지원","게임하면서 대화해요").write(out);
+                await(() -> enabled(panel,"emoticons"),"채팅 응답 후 이모티콘 열기 가능");
+                click(panel,"toolsToggle"); click(panel,"emoticons");
+                check(!ui(() -> find(panel,"composerTools").isVisible()) && ui(() -> find(panel,"emoticonPicker").isVisible()),"입력창 이모티콘 버튼은 도구 메뉴와 겹치지 않음");
+                check(Message.of("EMOTICON_LIST").equals(requests.poll(5,TimeUnit.SECONDS)),"보유 이모티콘 목록 요청");
+                Message.of("EMOTICON_OWNED","E03").write(out);
+                await(() -> enabled(panel,"emoticonE03"),"보유 이모티콘 활성화");
+                check(!enabled(panel,"emoticonE01"),"미보유 이모티콘 전송 차단");
+                click(panel,"emoticonE03");
+                check(Message.of("EMOTICON_SEND","E03").equals(requests.poll(5,TimeUnit.SECONDS)),"이모티콘 ID 전송");
+                Message.of("EMOTICON_MESSAGE","r1","정윤","E03").write(out);
+                await(() -> textArea(panel).contains("축하해요!"),"다른 사람의 이모티콘 수신");
+                check(!enabled(panel,"send"),"타인의 이모티콘으로 내 전송 대기 종료하지 않음");
+                Message.of("EMOTICON_MESSAGE","r1","김지원","E03").write(out);
+                await(() -> enabled(panel,"send"),"내 이모티콘 전송 확인");
+                snapshot(panel,"10-week2-game-reward.png");
+                click(panel,"closeEmoticons");
+                Message.of("GAME_STARTED","g2","정윤","2","정윤","민수").write(out);
+                await(() -> label(panel,"gameStatus").contains("0/2"),"내 요청 없이 시작된 게임 수신");
+                check(!enabled(panel,"chooseROCK"),"참가자 목록에 없는 중도 입장자는 관전만");
+                Message.of("GAME_RESULT","g2","2","정윤","ROCK","민수","ROCK","0").write(out);
+                await(() -> label(panel,"gameStatus").contains("무승부"),"무승부 표시");
+                Message.of("GAME_STARTED","g3","정윤","3","김지원","정윤","민수").write(out);
+                Message.of("ROOM_USERS","r1","김지원","정윤","새친구").write(out);
+                await(() -> label(panel,"gameStatus").contains("0/2"),"퇴장 참가자 제거와 새 참가자 자동 편입 방지");
+                Message.of("GAME_CANCELED","g3","PLAYERS_LEFT").write(out);
+                await(() -> textArea(panel).contains("참가자가 부족"),"참가자 이탈 취소 표시");
+                Message.of("GAME_STARTED","g4","김지원","2","김지원","정윤").write(out);
+                Message.of("GAME_CANCELED","g4","TIMEOUT").write(out);
+                await(() -> textArea(panel).contains("선택한 사람이 부족"),"서버 시간 초과 취소 표시");
+                Message.of("GAME_RESULT","g5","3","김지원","ROCK","정윤","ROCK","민수","SCISSORS","2","김지원","정윤").write(out);
+                await(() -> label(panel,"gameStatus").equals("승리 · 김지원, 정윤"),"중도 입장 관전 결과와 복수 승자 표시");
+                Message.of("GAME_RESULT","g6","2","김지원","ROCK","정윤","SCISSORS","1","김지원").write(out);
+                await(() -> ui(() -> ((JComponent)find(panel,"gameStage")).getClientProperty("phase")).equals("reveal"),"다음 결과 공개 도중 퇴장 준비");
+                click(panel,"leave"); requests.poll(5,TimeUnit.SECONDS); Message.of("ROOM_LEFT").write(out);
+                await(() -> !ui(() -> find(panel,"gamePanel").isVisible()),"퇴장 시 게임 화면 초기화");
+                check(!gameAnimationRunning(panel),"결과 연출 중 퇴장하면 타이머 정리");
+                check(ui(() -> ((JComponent)find(panel,"gameStage")).getClientProperty("phase")).equals("idle"),"퇴장 뒤 이전 결과 연출 제거");
+                Message.of("EMOTICON_GRANTED","g5","E08").write(out);
+                await(() -> ui(() -> ((JButton)find(panel,"emoticons")).getText()).contains("새 보상"),"방 밖에서 도착한 보상 이벤트 처리");
+                selectRoom(panel,"함께 가위바위보"); openSelected(panel); requests.poll(5,TimeUnit.SECONDS);
+                Message.of("ROOM_JOINED","r1","함께 가위바위보").write(out);
+                Message.of("ROOM_USERS","r1","김지원").write(out);
+                await(() -> listSize(panel,"users")==1,"혼자 있는 방 입장");
+                check(!enabled(panel,"startGame"),"한 명일 때 시작 차단");
+                Message.of("GAME_RESULT","bad","999999999","0").write(out);
+                await(() -> status(panel).contains("응답 형식"),"잘못된 반복 필드 수 안전하게 거부");
+            } finally { edt(() -> { panel.close(); return null; }); }
+            fixture.get(5,TimeUnit.SECONDS);
+        }
+    }
+
+    private static void animatedDemoChecks() throws Exception {
+        ChatPanel panel=edt(ChatPanel::new);
+        try {
+            set(panel,"nickname","김지원"); click(panel,"demo");
+            await(() -> listSize(panel,"roomList")==2,"서버 없이 애니메이션 데모 접속");
+            selectRoom(panel,"우리들의 아지트"); openSelected(panel);
+            await(() -> listSize(panel,"users")==3,"가상 친구 두 명과 체험방 입장");
+            click(panel,"toolsToggle"); snapshot(panel,"13-week2-composer-tools.png");
+            click(panel,"game"); click(panel,"startGame");
+            await(() -> enabled(panel,"choosePAPER"),"서버 없이 게임 시작");
+            snapshot(panel,"14-week2-game-small.png",960,680);
+            click(panel,"membersToggle"); snapshot(panel,"15-week2-game-members-small.png",960,680);
+            click(panel,"membersToggle"); click(panel,"choosePAPER");
+            await(() -> label(panel,"gameStatus").equals("승리 · 김지원"),"가상 친구 응답과 결과 공개 완료");
+            click(panel,"emoticons");
+            await(() -> enabled(panel,"emoticonE03"),"데모 승리 보상 사용 가능");
+            check(!ui(() -> find(panel,"gamePanel").isVisible()),"그림 선택창을 열면 게임 카드를 접어 대화 공간 확보");
+            check(ui(() -> ((JButton)find(panel,"emoticonE03")).getIcon()!=null),"보유 목록에 그림 이모티콘 표시");
+            check(!enabled(panel,"emoticonE08"),"그림으로 바꿔도 미보유 항목 전송 차단");
+            snapshot(panel,"16-week2-sticker-picker.png",960,680);
+            click(panel,"emoticonE03");
+            await(() -> textArea(panel).contains("축하해요!"),"데모 이모티콘 전송");
+            await(() -> enabled(panel,"emoticonE01"),"그림 송신 확인 이후 다시 선택 가능");
+            click(panel,"emoticonE01");
+            await(() -> textArea(panel).contains("[이모티콘: 미소]"),"그림 메시지 복사용 설명 보존");
+            snapshot(panel,"17-week2-sticker-chat.png",960,680);
+            click(panel,"closeEmoticons");
+            click(panel,"toolsToggle"); click(panel,"whisper");
+            edt(() -> { ((JComboBox<?>)find(panel,"whisperTarget")).setSelectedIndex(0); return null; });
+            set(panel,"whisperInput","반가워요"); click(panel,"sendWhisper");
+            await(() -> textArea(panel).contains("데모 자동 응답"),"가상 친구의 귓속말 응답");
+            click(panel,"closeWhisper"); click(panel,"startGame");
+            await(() -> enabled(panel,"chooseROCK"),"데모 다음 판 시작");
+            click(panel,"chooseROCK");
+            await(() -> enabled(panel,"leave"),"선택 응답 이후 퇴장 가능");
+            click(panel,"leave");
+            await(() -> status(panel).contains("로비로"),"가상 응답 대기 중 퇴장");
+            selectRoom(panel,"오늘 뭐 먹지?"); openSelected(panel);
+            await(() -> label(panel,"roomTitle").equals("오늘 뭐 먹지?"),"다른 데모 방 입장");
+            Thread.sleep(1700);
+            check(!ui(() -> find(panel,"gamePanel").isVisible()) && !textArea(panel).contains("승리"),"이전 방의 지연된 가상 게임 응답 차단");
+        } finally { edt(() -> { panel.close(); return null; }); }
+    }
+
+    private static void stickerRenderingChecks() throws Exception {
         edt(() -> {
-            panel.setSize(1080, 720); layout(panel);
-            BufferedImage image = new BufferedImage(1080, 720, BufferedImage.TYPE_INT_RGB);
+            ConversationView view=new ConversationView();
+            JPanel parent=new JPanel(new BorderLayout()); parent.setSize(400,600); parent.add(view); parent.doLayout();
+            view.addEmoticon("지원","E03",true); view.addEmoticon("정윤","E04",false);
+            int before=view.getPreferredSize().height;
+            check(before>=224,"양쪽 그림 메시지에 충분한 높이 확보");
+            view.addMessage("정윤","E03은 일반 텍스트예요",false);
+            check(view.getPreferredSize().height>before,"그림 뒤 일반 메시지의 공간 분리");
+            check(view.getText().contains("[이모티콘: 축하해요!]") && view.getText().contains("E03은 일반 텍스트예요"),"그림과 일반 텍스트를 구분하여 복사");
+            check(view.getAccessibleContext().getAccessibleDescription().contains("고마워요"),"그림의 의미를 접근성 설명에 제공");
+            boolean rejected=false;
+            try { view.addEmoticon("지원","BAD",true); } catch(IllegalArgumentException e) { rejected=true; }
+            check(rejected,"알 수 없는 그림 ID 거부");
+            view.setSize(400,view.getPreferredSize().height);
+            BufferedImage image=new BufferedImage(400,view.getHeight(),BufferedImage.TYPE_INT_RGB);
+            Graphics2D g=image.createGraphics(); view.paint(g); g.dispose();
+            ImageIO.write(image,"png",Path.of("build/screenshots/18-week2-sticker-messages.png").toFile());
+            view.clear(); check(view.getText().isEmpty(),"방 초기화 시 그림 메시지도 제거");
+            return null;
+        });
+    }
+
+    private static boolean gameAnimationRunning(ChatPanel panel) throws Exception {
+        return edt(() -> {
+            Component stage=find(panel,"gameStage");
+            var field=stage.getClass().getDeclaredField("timer"); field.setAccessible(true);
+            return ((javax.swing.Timer)field.get(stage)).isRunning();
+        });
+    }
+
+    private static void snapshot(ChatPanel panel, String name) throws Exception { snapshot(panel,name,1080,720); }
+    private static void snapshot(ChatPanel panel, String name, int width, int height) throws Exception {
+        edt(() -> {
+            panel.setSize(width, height); layout(panel);
+            BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
             Graphics2D graphics = image.createGraphics(); panel.printAll(graphics); graphics.dispose();
             Path directory = Path.of("build/screenshots"); Files.createDirectories(directory);
             ImageIO.write(image, "png", directory.resolve(name).toFile());
