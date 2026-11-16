@@ -260,7 +260,7 @@ final class Hub {
             error(s, "GAME_NOT_FOUND", "참가 중인 게임을 찾을 수 없습니다");
             return;
         }
-        if (!CHOICES.contains(choice)) {
+        if (choice == null || !CHOICES.contains(choice)) {
             error(s, "INVALID_CHOICE", "선택값은 ROCK/PAPER/SCISSORS 중 하나여야 합니다");
             return;
         }
@@ -363,7 +363,7 @@ final class Hub {
             error(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다");
             return;
         }
-        if (!EMOTICON_IDS.contains(id)) {
+        if (id == null || !EMOTICON_IDS.contains(id)) {
             error(s, "INVALID_EMOTICON", "존재하지 않는 이모티콘입니다");
             return;
         }

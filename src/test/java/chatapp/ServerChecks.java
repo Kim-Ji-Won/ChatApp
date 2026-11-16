@@ -369,6 +369,10 @@ public final class ServerChecks {
         a.expectError("EMOTICON_NOT_OWNED", "미보유 이모티콘 송신 거부");
         a.send("EMOTICON_SEND", "X99");
         a.expectError("INVALID_EMOTICON", "없는 이모티콘 ID 거부");
+        a.send("EMOTICON_SEND"); // id 필드 누락
+        a.expectError("INVALID_EMOTICON", "이모티콘 ID 누락 요청 거부(연결 유지)");
+        a.send("ROOM_LIST");
+        check(!a.expect("ROOMS").fields().isEmpty(), "이모티콘 ID 누락 후에도 연결·요청 처리 유지");
         a.send("EMOTICON_LIST");
         check(a.expect("EMOTICON_OWNED").fields().isEmpty(), "최초 보유 목록 0개");
 
@@ -381,6 +385,8 @@ public final class ServerChecks {
         a.expectError("GAME_NOT_FOUND", "없는 gameId 선택 거부");
         a.send("GAME_CHOOSE", gameId, "총");
         a.expectError("INVALID_CHOICE", "잘못된 선택값 거부");
+        a.send("GAME_CHOOSE", gameId); // choice 필드 누락
+        a.expectError("INVALID_CHOICE", "선택값 누락 요청 거부(연결·참가 상태 유지)");
 
         choose(a, gameId, "ROCK", both);
         a.send("GAME_CHOOSE", gameId, "PAPER");
