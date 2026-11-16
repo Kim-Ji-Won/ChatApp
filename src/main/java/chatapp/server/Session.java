@@ -142,6 +142,11 @@ final class Session implements Runnable {
             case "ROOM_JOIN" -> hub.joinRoom(this, arg(message, 0));
             case "ROOM_LEAVE" -> hub.leaveRoom(this);
             case "CHAT_SEND" -> hub.chat(this, arg(message, 0));
+            case "GAME_START" -> hub.gameStart(this);
+            case "GAME_CHOOSE" -> hub.gameChoose(this, arg(message, 0), arg(message, 1));
+            case "EMOTICON_LIST" -> hub.emoticonList(this);
+            case "EMOTICON_SEND" -> hub.emoticonSend(this, arg(message, 0));
+            case "WHISPER_SEND" -> hub.whisper(this, arg(message, 0), arg(message, 1));
             default -> send(Message.of("ERROR", "UNSUPPORTED", "지원하지 않는 요청: " + message.type()));
         }
     }
