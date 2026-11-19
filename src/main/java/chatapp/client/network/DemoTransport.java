@@ -7,6 +7,7 @@ import java.util.concurrent.*;
 
 /** UI 체험용 로컬 데이터. 가상 참가자와 정해진 결과를 사용하며 실제 서버 통신·영구 저장은 하지 않는다. */
 public final class DemoTransport implements ChatTransport {
+    private final DemoPlanner planner = new DemoPlanner();
     private final Map<String, String> rooms = new LinkedHashMap<>();
     private Listener listener;
     private String nickname;
@@ -28,6 +29,7 @@ public final class DemoTransport implements ChatTransport {
         this.nickname = nickname;
         peer1 = nickname.equals("데모 친구") ? "데모 친구 A" : "데모 친구";
         peer2 = nickname.equals("데모 친구 B") ? "데모 친구 C" : "데모 친구 B";
+        planner.seed(nickname,peer1);
         rooms.put("1", "우리들의 아지트");
         rooms.put("2", "오늘 뭐 먹지?");
         emit(Message.of("WELCOME", nickname));
@@ -35,6 +37,10 @@ public final class DemoTransport implements ChatTransport {
     }
     @Override public synchronized void send(Message message) throws IOException {
         if (closed || listener == null) throw new IOException("데모에 연결되어 있지 않습니다.");
+        if(chatapp.client.planner.PlannerState.supports(message.type())) {
+            planner.send(message,currentRoom,nickname,"1".equals(currentRoom)?List.of(nickname,peer1,peer2):List.of(nickname),this::emit);
+            return;
+        }
         switch (message.type()) {
             case "ROOM_LIST" -> roomList();
             case "ROOM_CREATE" -> {

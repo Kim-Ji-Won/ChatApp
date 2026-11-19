@@ -13,7 +13,7 @@ import java.util.function.Consumer;
 
 /** 대화 내용을 평문으로 보관하고 가변 너비 말풍선으로 표시한다. 시각은 이 클라이언트 수신 시각. */
 public final class ConversationView extends JComponent implements Scrollable {
-    private record Entry(String sender, String text, boolean mine, boolean notice, String time, long arrivedAt, String emoticonId) { }
+    private record Entry(String sender, String text, boolean mine, boolean notice, String time, long arrivedAt, String emoticonId, boolean taskable) { }
     private record Lines(List<TextLayout> layouts, float width, float height) { }
     private static final Font BODY = new Font("SansSerif", Font.PLAIN, 14);
     private static final Font SMALL = new Font("SansSerif", Font.PLAIN, 11);
@@ -26,6 +26,11 @@ public final class ConversationView extends JComponent implements Scrollable {
     private boolean followLatest;
     private int anchorY;
     private long revision;
+    private java.util.function.BiConsumer<String,String> taskHandler=(from,text)->{};
+    private final List<Rectangle> messageBounds=new ArrayList<>();
+    private Entry selectedMessage;
+    public void setTaskHandler(java.util.function.BiConsumer<String,String> handler) { taskHandler=handler; }
+
 
     public ConversationView() {
         setName("transcript"); setOpaque(true); setBackground(Theme.CHAT);
@@ -33,21 +38,35 @@ public final class ConversationView extends JComponent implements Scrollable {
         JPopupMenu menu = new JPopupMenu();
         JMenuItem copy = new JMenuItem("대화 내용 복사");
         copy.addActionListener(event -> getToolkit().getSystemClipboard().setContents(new java.awt.datatransfer.StringSelection(getText()), null));
-        menu.add(copy); setComponentPopupMenu(menu);
+        JMenuItem task=new JMenuItem("할 일로 만들기"); task.setName("messageToTodo");
+        task.addActionListener(event -> { if(selectedMessage!=null && selectedMessage.taskable) taskHandler.accept(selectedMessage.sender,selectedMessage.text); });
+        menu.add(task); menu.add(copy); setComponentPopupMenu(menu);
+        addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override public void mousePressed(java.awt.event.MouseEvent event) { select(event); }
+            @Override public void mouseReleased(java.awt.event.MouseEvent event) { select(event); }
+            private void select(java.awt.event.MouseEvent event) {
+                render(null,getWidth()); selectedMessage=null;
+                for(int i=0;i<messageBounds.size();i++) if(messageBounds.get(i).contains(event.getPoint())) selectedMessage=entries.get(i);
+                task.setEnabled(selectedMessage!=null && selectedMessage.taskable);
+            }
+        });
     }
     public void addMessage(String sender, String text, boolean mine) {
-        append(new Entry(sender, text, mine, false, LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")), System.currentTimeMillis(), null));
+        append(new Entry(sender, text, mine, false, LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")), System.currentTimeMillis(), null, false));
+    }
+    public void addTaskMessage(String sender,String text,boolean mine) {
+        append(new Entry(sender,text,mine,false,LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")),System.currentTimeMillis(),null,true));
     }
     public void addEmoticon(String sender, String id, boolean mine) {
         try { EmoticonPicker.validate(id); }
         catch (java.io.IOException e) { throw new IllegalArgumentException(e.getMessage(), e); }
         // 복사·접근성용 설명과 그림 ID를 함께 보관한다. 일반 채팅 문자열은 그림으로 해석하지 않는다.
         append(new Entry(sender, "[이모티콘: " + EmoticonPicker.label(id) + "]", mine, false,
-                LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")), System.currentTimeMillis(), id));
+                LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")), System.currentTimeMillis(), id, false));
     }
-    public void addNotice(String text) { append(new Entry("", text, false, true, "", System.currentTimeMillis(), null)); }
+    public void addNotice(String text) { append(new Entry("", text, false, true, "", System.currentTimeMillis(), null, false)); }
     public void clear() {
-        revision++; scrollPending=false; entries.clear(); setUnseen(false);
+        revision++; scrollPending=false; entries.clear(); selectedMessage=null; messageBounds.clear(); setUnseen(false);
         if (scrollPane!=null) scrollPane.getViewport().setViewPosition(new Point());
         revalidate(); repaint();
     }
@@ -125,12 +144,13 @@ public final class ConversationView extends JComponent implements Scrollable {
         return new Lines(layouts, width, Math.max(0, height-5));
     }
     private int render(Graphics2D graphics, int width) {
-        int y = 10;
+        int y = 10; messageBounds.clear();
         for (int index=0; index<entries.size(); index++) {
             Entry entry=entries.get(index);
             boolean continued=index>0 && sameGroup(entries.get(index-1),entry);
             boolean continues=index+1<entries.size() && sameGroup(entry,entries.get(index+1));
             if (entry.notice) {
+                messageBounds.add(new Rectangle());
                 Lines lines = wrap(entry.text, Math.max(80,width-100), SMALL);
                 int w = (int)Math.ceil(lines.width)+24, h = (int)Math.ceil(lines.height)+8;
                 if (graphics != null) {
@@ -147,6 +167,7 @@ public final class ConversationView extends JComponent implements Scrollable {
             int bubbleHeight = sticker ? 112 : (int)Math.ceil(lines.height)+16;
             int x = entry.mine ? width-26-bubbleWidth : 72;
             int top = y+(entry.mine || continued ? 0 : 21);
+            messageBounds.add(new Rectangle(x,top,bubbleWidth,bubbleHeight));
             if (graphics != null) {
                 if (!entry.mine && !continued) {
                     Theme.avatar(entry.sender,36).paintIcon(this,graphics,22,y);

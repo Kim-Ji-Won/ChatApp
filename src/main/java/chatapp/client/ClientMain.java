@@ -14,7 +14,7 @@ public final class ClientMain {
         SwingUtilities.invokeLater(() -> {
             Theme.install();
             ChatPanel panel = new ChatPanel();
-            JFrame frame = new JFrame("ChatApp · 김지원 프론트엔드 1주차");
+            JFrame frame = new JFrame("ChatApp · 김지원 프론트엔드 3주차");
             frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
             frame.setContentPane(panel); frame.pack();
             frame.setMinimumSize(new Dimension(960, 680));
