@@ -15,6 +15,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -225,10 +226,10 @@ public final class ServerChecks {
         c.expect("ROOMS");
         a.expect("ROOMS");
 
-        // A 비정상 종료: 방1 삭제, 나머지에게 ROOMS
+        // A 비정상 종료: 방1은 비어도 삭제되지 않고 인원만 0으로 반영(3주차: 빈 방 유지 정책)
         a.close();
-        List<String> afterClose = List.of(room2, "방2", "2");
-        check(b.expect("ROOMS").fields().equals(afterClose), "접속 종료 반영(빈 방 삭제)");
+        List<String> afterClose = List.of(room1, "방1", "0", room2, "방2", "2");
+        check(b.expect("ROOMS").fields().equals(afterClose), "접속 종료 반영(빈 방 유지, 인원 0)");
         check(c.expect("ROOMS").fields().equals(afterClose), "방 안의 사용자에게도 반영");
 
         // C 종료: 남은 B에게 SYSTEM → ROOM_USERS → ROOMS
@@ -251,6 +252,11 @@ public final class ServerChecks {
         gameDepartedPlayerSilentChecks(port);
         gameFullEmoticonChecks(port);
         gameTimeoutChecks();
+        todoBasicChecks(port);
+        todoPermissionAndValidationChecks(port);
+        todoConflictAndDedupChecks(port);
+        scheduleChecks(port);
+        emptyRoomPersistsChecks(port);
 
         System.out.println("\n통과 " + passed + "건");
         server.stop();
@@ -766,5 +772,270 @@ public final class ServerChecks {
         flooder.close();
         other.close();
         slow.close();
+    }
+
+    // ---- 3주차: 할 일·일정 ----
+
+    private static String uuid() {
+        return UUID.randomUUID().toString();
+    }
+
+    /** 할 일 생성·조회·수정·완료·삭제의 정상 흐름과 필드 순서를 확인한다. */
+    private static void todoBasicChecks(int port) throws Exception {
+        Client a = new Client(port); a.hello("할일-가");
+        a.send("ROOM_CREATE", "할일방");
+        String room = a.expect("ROOM_JOINED").field(0);
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+        Client b = new Client(port); b.hello("할일-나");
+        b.send("ROOM_JOIN", room);
+        b.expect("ROOM_JOINED"); b.expect("ROOM_USERS"); b.expect("SYSTEM"); b.expect("ROOMS");
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+
+        // 빈 목록
+        a.send("TODO_LIST", room);
+        check(a.expect("TODO_LIST_START").fields().equals(List.of(room, "0")), "빈 할 일 목록 시작(count=0)");
+        check(a.expect("TODO_LIST_END").field(0).equals(room), "빈 할 일 목록 종료");
+
+        // 생성: 요청자 포함 방 전체에 TODO_CREATED(roomId, requestId, T)
+        String requestId = uuid();
+        a.send("TODO_CREATE", requestId, room, "장보기", "정윤", "우유 사오자", "할일-나", "2026-12-01", "18:00");
+        Message created = a.expect("TODO_CREATED");
+        check(created.field(0).equals(room) && created.field(1).equals(requestId), "TODO_CREATED roomId·requestId");
+        String todoId = created.field(2);
+        check(created.fields().subList(2, 12).equals(
+                        List.of(todoId, "1", "장보기", "할일-가", "할일-나", "2026-12-01", "18:00", "0", "정윤", "우유 사오자")),
+                "TODO_CREATED 필드 순서(T, revision=1)");
+        check(b.expect("TODO_CREATED").fields().equals(created.fields()), "같은 방 전체에 동일 내용 수신(보낸 사람 포함)");
+
+        // 조회: 방금 만든 항목 1건
+        a.send("TODO_LIST", room);
+        check(a.expect("TODO_LIST_START").field(1).equals("1"), "목록 조회 count=1");
+        check(a.expect("TODO_ITEM").fields().equals(created.fields().subList(2, 12)), "TODO_ITEM 필드가 생성 응답과 동일");
+        a.expect("TODO_LIST_END");
+
+        // 수정: 작성자가 제목·마감일 변경(담당자는 그대로)
+        String editId = uuid();
+        a.send("TODO_EDIT", editId, todoId, "1", "장보기(마감 변경)", "할일-나", "2026-12-02", "09:00");
+        Message edited = a.expect("TODO_EDITED");
+        check(edited.field(1).equals(editId) && edited.field(3).equals("2")
+                        && edited.field(4).equals("장보기(마감 변경)") && edited.field(11).equals("우유 사오자"),
+                "TODO_EDITED 반영 및 revision 증가(원문은 그대로)");
+        check(b.expect("TODO_EDITED").fields().equals(edited.fields()), "수정도 방 전체에 전달");
+
+        // 완료 처리: 담당자(할일-나)가 완료로 변경
+        String completeId = uuid();
+        b.send("TODO_COMPLETE", completeId, todoId, "2", "1");
+        Message completed = b.expect("TODO_COMPLETED");
+        check(completed.fields().equals(List.of(room, completeId, todoId, "3", "1")), "TODO_COMPLETED(담당자 완료 처리)");
+        a.expect("TODO_COMPLETED");
+
+        // 삭제: 작성자만 가능, 삭제 후 TODO_NOT_FOUND
+        String deleteId = uuid();
+        a.send("TODO_DELETE", deleteId, todoId, "3");
+        check(a.expect("TODO_DELETED").fields().equals(List.of(room, deleteId, todoId)), "TODO_DELETED");
+        b.expect("TODO_DELETED");
+        a.send("TODO_LIST", room);
+        check(a.expect("TODO_LIST_START").field(1).equals("0"), "삭제 후 목록 0건");
+        a.expect("TODO_LIST_END");
+        a.send("TODO_EDIT", uuid(), todoId, "3", "다시 수정", "", "", "");
+        a.expectError("TODO_NOT_FOUND", "삭제된 항목 재수정 거부");
+
+        a.close(); b.close();
+    }
+
+    /** 권한(작성자·담당자)과 입력 검증을 확인한다. */
+    private static void todoPermissionAndValidationChecks(int port) throws Exception {
+        Client a = new Client(port); a.hello("검증-가");
+        a.send("ROOM_CREATE", "검증방");
+        String room = a.expect("ROOM_JOINED").field(0);
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+        Client b = new Client(port); b.hello("검증-나");
+        b.send("ROOM_JOIN", room);
+        b.expect("ROOM_JOINED"); b.expect("ROOM_USERS"); b.expect("SYSTEM"); b.expect("ROOMS");
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+
+        // 입력 검증: 빈 제목, 담당자가 방에 없는 사람, 날짜 없이 시간만, 잘못된 날짜 형식
+        a.send("TODO_CREATE", uuid(), room, "", "검증-가", "본문", "", "", "");
+        a.expectError("INVALID_TODO", "빈 제목 거부");
+        a.send("TODO_CREATE", uuid(), room, "제목", "검증-가", "본문", "없는사람", "", "");
+        a.expectError("INVALID_TODO", "방에 없는 담당자 거부");
+        a.send("TODO_CREATE", uuid(), room, "제목", "검증-가", "본문", "", "", "09:00");
+        a.expectError("INVALID_TODO", "날짜 없이 시간만 지정 거부");
+        a.send("TODO_CREATE", uuid(), room, "제목", "검증-가", "본문", "", "2026-13-01", "");
+        a.expectError("INVALID_TODO", "존재하지 않는 날짜 거부");
+        a.send("TODO_CREATE", uuid(), room, "제목", "검증-가", "", "", "", "");
+        a.expectError("INVALID_TODO", "빈 원문 사본 거부");
+
+        // 정상 생성(담당자 없음) 후 권한 검증
+        String requestId = uuid();
+        a.send("TODO_CREATE", requestId, room, "권한 확인용", "검증-가", "본문", "", "", "");
+        Message created = a.expect("TODO_CREATED");
+        b.expect("TODO_CREATED");
+        String todoId = created.field(2);
+
+        // 작성자가 아닌 사람의 수정·삭제 거부
+        b.send("TODO_EDIT", uuid(), todoId, "1", "남이 수정", "", "", "");
+        b.expectError("FORBIDDEN", "작성자 아닌 사람의 수정 거부");
+        b.send("TODO_DELETE", uuid(), todoId, "1");
+        b.expectError("FORBIDDEN", "작성자 아닌 사람의 삭제 거부");
+        // 담당자도 아니고 작성자도 아닌 사람의 완료 처리 거부
+        b.send("TODO_COMPLETE", uuid(), todoId, "1", "1");
+        b.expectError("FORBIDDEN", "작성자·담당자가 아닌 사람의 완료 처리 거부");
+
+        a.close(); b.close();
+    }
+
+    /** expectedRevision 충돌(CONFLICT)과 requestId 중복 처리를 확인한다. */
+    private static void todoConflictAndDedupChecks(int port) throws Exception {
+        Client a = new Client(port); a.hello("충돌-가");
+        a.send("ROOM_CREATE", "충돌방");
+        String room = a.expect("ROOM_JOINED").field(0);
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+
+        String createId = uuid();
+        a.send("TODO_CREATE", createId, room, "원본 제목", "충돌-가", "본문", "", "", "");
+        String todoId = a.expect("TODO_CREATED").field(2);
+
+        // 오래된 revision으로 수정 시도 → CONFLICT
+        a.send("TODO_EDIT", uuid(), todoId, "0", "충돌 수정", "", "", "");
+        a.expectError("CONFLICT", "오래된 revision으로 수정 거부");
+
+        // 같은 requestId, 같은 내용으로 다시 보내면 재실행 없이 같은 응답을 재전송
+        a.send("TODO_CREATE", createId, room, "원본 제목", "충돌-가", "본문", "", "", "");
+        Message replay = a.expect("TODO_CREATED");
+        check(replay.field(2).equals(todoId), "같은 requestId·내용 재전송은 새로 만들지 않고 같은 응답 재전송");
+        a.send("TODO_LIST", room);
+        check(a.expect("TODO_LIST_START").field(1).equals("1"), "중복 생성 요청으로 두 번째 항목이 생기지 않음");
+        a.expect("TODO_ITEM"); a.expect("TODO_LIST_END");
+
+        // 같은 requestId, 다른 내용 → INVALID_TODO(최초 기록은 유지)
+        a.send("TODO_CREATE", createId, room, "다른 제목", "충돌-가", "본문", "", "", "");
+        a.expectError("INVALID_TODO", "같은 requestId 다른 내용은 거부");
+
+        // requestId 누락 → 세 번째 필드는 빈 문자열
+        a.send("TODO_CREATE", "", room, "제목", "충돌-가", "본문", "", "", "");
+        Message missing = a.expect("ERROR");
+        check(missing.field(0).equals("INVALID_TODO") && missing.field(2).isEmpty(), "requestId 누락 시 세 번째 필드 빈 문자열");
+
+        a.close();
+    }
+
+    /** 일정 생성·조회(날짜 필터)·수정·삭제와 메모 줄바꿈 허용을 확인한다. */
+    private static void scheduleChecks(int port) throws Exception {
+        Client a = new Client(port); a.hello("일정-가");
+        a.send("ROOM_CREATE", "일정방");
+        String room = a.expect("ROOM_JOINED").field(0);
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+        Client b = new Client(port); b.hello("일정-나");
+        b.send("ROOM_JOIN", room);
+        b.expect("ROOM_JOINED"); b.expect("ROOM_USERS"); b.expect("SYSTEM"); b.expect("ROOMS");
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+
+        a.send("SCHEDULE_CREATE", uuid(), room, "", "약속", "10:00", "메모");
+        a.expectError("INVALID_SCHEDULE", "날짜 없는 일정 거부");
+        a.send("SCHEDULE_CREATE", uuid(), room, "2026-12-25", "", "", "");
+        a.expectError("INVALID_SCHEDULE", "빈 제목 거부");
+        a.send("SCHEDULE_CREATE", uuid(), room, "2026-12-25", "약속", "25:00", "");
+        a.expectError("INVALID_SCHEDULE", "잘못된 시간 형식 거부");
+
+        String requestId1 = uuid();
+        a.send("SCHEDULE_CREATE", requestId1, room, "2026-12-25", "크리스마스 모임", "19:00", "선물 준비하기\n케이크도");
+        Message created1 = a.expect("SCHEDULE_CREATED");
+        check(created1.fields().subList(2, 9).equals(
+                        List.of(created1.field(2), "1", "2026-12-25", "크리스마스 모임", "19:00", "선물 준비하기\n케이크도", "일정-가")),
+                "SCHEDULE_CREATED 필드 순서(메모 줄바꿈 보존)");
+        check(b.expect("SCHEDULE_CREATED").fields().equals(created1.fields()), "일정도 방 전체 전달");
+
+        String requestId2 = uuid();
+        a.send("SCHEDULE_CREATE", requestId2, room, "2026-12-31", "연말 정리", "", "");
+        Message created2 = a.expect("SCHEDULE_CREATED");
+        b.expect("SCHEDULE_CREATED");
+
+        // 날짜 필터 조회
+        a.send("SCHEDULE_LIST", room, "2026-12-25");
+        check(a.expect("SCHEDULE_LIST_START").field(1).equals("1"), "날짜 필터 조회 count=1");
+        check(a.expect("SCHEDULE_ITEM").fields().equals(created1.fields().subList(2, 9)), "필터된 일정만 수신");
+        a.expect("SCHEDULE_LIST_END");
+
+        // 전체 조회(빈 문자열)
+        a.send("SCHEDULE_LIST", room, "");
+        check(a.expect("SCHEDULE_LIST_START").field(1).equals("2"), "전체 조회 count=2");
+        a.expect("SCHEDULE_ITEM"); a.expect("SCHEDULE_ITEM"); a.expect("SCHEDULE_LIST_END");
+
+        // 작성자가 아닌 사람의 수정·삭제 거부
+        String scheduleId = created2.field(2);
+        b.send("SCHEDULE_EDIT", uuid(), scheduleId, "1", "2026-12-31", "남이 수정", "", "");
+        b.expectError("FORBIDDEN", "작성자 아닌 사람의 일정 수정 거부");
+
+        // 수정 후 삭제
+        String editId = uuid();
+        a.send("SCHEDULE_EDIT", editId, scheduleId, "1", "2027-01-01", "새해 일정", "", "");
+        Message edited = a.expect("SCHEDULE_EDITED");
+        check(edited.field(3).equals("2") && edited.field(4).equals("2027-01-01"), "일정 수정 반영");
+        b.expect("SCHEDULE_EDITED");
+        String deleteId = uuid();
+        a.send("SCHEDULE_DELETE", deleteId, scheduleId, "2");
+        check(a.expect("SCHEDULE_DELETED").fields().equals(List.of(room, deleteId, scheduleId)), "SCHEDULE_DELETED");
+        b.expect("SCHEDULE_DELETED");
+        a.send("SCHEDULE_EDIT", uuid(), scheduleId, "2", "2027-01-01", "다시 수정", "", "");
+        a.expectError("SCHEDULE_NOT_FOUND", "삭제된 일정 재수정 거부");
+
+        a.close(); b.close();
+    }
+
+    /** 빈 방이 삭제되지 않고, 할 일·일정과 담당자 닉네임이 그대로 유지되는지 확인한다. */
+    private static void emptyRoomPersistsChecks(int port) throws Exception {
+        Client a = new Client(port); a.hello("유지-가");
+        a.send("ROOM_CREATE", "유지방");
+        String room = a.expect("ROOM_JOINED").field(0);
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+        Client b = new Client(port); b.hello("유지-나");
+        b.send("ROOM_JOIN", room);
+        b.expect("ROOM_JOINED"); b.expect("ROOM_USERS"); b.expect("SYSTEM"); b.expect("ROOMS");
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+
+        String requestId = uuid();
+        a.send("TODO_CREATE", requestId, room, "유지되는 할 일", "유지-가", "본문", "유지-나", "", "");
+        Message created = a.expect("TODO_CREATED");
+        b.expect("TODO_CREATED");
+        String todoId = created.field(2);
+
+        // 담당자(B)가 방을 나가도 저장된 담당자 닉네임은 유지되고, 담당자를 바꾸지 않는 수정은 허용된다.
+        b.send("ROOM_LEAVE");
+        b.expect("ROOM_LEFT");
+        a.expect("SYSTEM"); a.expect("ROOM_USERS"); a.expect("ROOMS"); b.expect("ROOMS");
+        String editId = uuid();
+        a.send("TODO_EDIT", editId, todoId, "1", "제목만 변경", "유지-나", "", "");
+        Message edited = a.expect("TODO_EDITED");
+        check(edited.field(6).equals("유지-나"), "퇴장한 담당자의 닉네임은 그대로 유지");
+
+        // 모두 나가 방이 비어도 방은 삭제되지 않는다(로비 목록에 인원 0으로 남음).
+        a.send("ROOM_LEAVE");
+        a.expect("ROOM_LEFT");
+        check(roomCount(a.expect("ROOMS"), "유지방") == 0, "모두 퇴장해도 방은 삭제되지 않고 인원 0으로 남음");
+
+        // 다시 들어가면 기존 할 일이 그대로 보인다.
+        Client c = new Client(port); c.hello("유지-다");
+        c.send("ROOM_JOIN", room);
+        c.expect("ROOM_JOINED"); c.expect("ROOM_USERS"); c.expect("SYSTEM"); c.expect("ROOMS");
+        a.expect("ROOMS"); b.expect("ROOMS");
+        c.send("TODO_LIST", room);
+        check(c.expect("TODO_LIST_START").field(1).equals("1"), "빈 방이었어도 할 일이 그대로 남아있음");
+        Message item = c.expect("TODO_ITEM");
+        check(item.field(0).equals(todoId) && item.field(2).equals("제목만 변경"), "재입장 후 목록 내용 일치");
+        c.expect("TODO_LIST_END");
+
+        // 담당자를 방에 없는 사람으로 새로 지정하려 하면 거부되지만, 바꾸지 않는 수정은 계속 허용된다.
+        c.send("TODO_EDIT", uuid(), todoId, "2", "다시 제목 변경", "유지-나", "", "");
+        c.expectError("FORBIDDEN", "작성자가 아닌 재입장자는 수정 불가");
+        String editId2 = uuid();
+        a.send("ROOM_JOIN", room); // 작성자가 다시 들어와서 담당자 변경 시도
+        a.expect("ROOM_JOINED"); a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+        c.expect("ROOM_USERS"); c.expect("SYSTEM"); c.expect("ROOMS");
+        b.expect("ROOMS");
+        a.send("TODO_EDIT", editId2, todoId, "2", "제목 변경", "모르는사람", "", "");
+        a.expectError("INVALID_TODO", "방에 없는 새 담당자로는 변경 불가");
+
+        a.close(); b.close(); c.close();
     }
 }

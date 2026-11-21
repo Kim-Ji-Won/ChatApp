@@ -9,7 +9,9 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
@@ -36,9 +38,11 @@ final class Session implements Runnable {
     private final Thread writer;
     private volatile boolean closing;
 
-    // 아래 두 필드는 Hub의 락 안에서만 변경한다.
+    // 아래 필드는 Hub의 락 안에서만 변경한다.
     String nickname;
     Hub.Room room;
+    /** 할 일·일정 변경 요청의 requestId 중복 처리 기록. 연결이 끝나면(= 새 Session) 함께 사라진다. */
+    final Map<String, Hub.RequestRecord> plannerRequests = new HashMap<>();
 
     Session(Socket socket, Hub hub) throws IOException {
         this.socket = socket;
@@ -147,6 +151,20 @@ final class Session implements Runnable {
             case "EMOTICON_LIST" -> hub.emoticonList(this);
             case "EMOTICON_SEND" -> hub.emoticonSend(this, arg(message, 0));
             case "WHISPER_SEND" -> hub.whisper(this, arg(message, 0), arg(message, 1));
+            case "TODO_LIST" -> hub.todoList(this, arg(message, 0));
+            case "TODO_CREATE" -> hub.todoCreate(this, message.fields(), arg(message, 0), arg(message, 1),
+                    arg(message, 2), arg(message, 3), arg(message, 4), arg(message, 5), arg(message, 6), arg(message, 7));
+            case "TODO_EDIT" -> hub.todoEdit(this, message.fields(), arg(message, 0), arg(message, 1), arg(message, 2),
+                    arg(message, 3), arg(message, 4), arg(message, 5), arg(message, 6));
+            case "TODO_COMPLETE" -> hub.todoComplete(this, message.fields(), arg(message, 0), arg(message, 1),
+                    arg(message, 2), arg(message, 3));
+            case "TODO_DELETE" -> hub.todoDelete(this, message.fields(), arg(message, 0), arg(message, 1), arg(message, 2));
+            case "SCHEDULE_LIST" -> hub.scheduleList(this, arg(message, 0), arg(message, 1));
+            case "SCHEDULE_CREATE" -> hub.scheduleCreate(this, message.fields(), arg(message, 0), arg(message, 1),
+                    arg(message, 2), arg(message, 3), arg(message, 4), arg(message, 5));
+            case "SCHEDULE_EDIT" -> hub.scheduleEdit(this, message.fields(), arg(message, 0), arg(message, 1),
+                    arg(message, 2), arg(message, 3), arg(message, 4), arg(message, 5), arg(message, 6));
+            case "SCHEDULE_DELETE" -> hub.scheduleDelete(this, message.fields(), arg(message, 0), arg(message, 1), arg(message, 2));
             default -> send(Message.of("ERROR", "UNSUPPORTED", "지원하지 않는 요청: " + message.type()));
         }
     }
