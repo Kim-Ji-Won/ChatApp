@@ -257,6 +257,7 @@ public final class ServerChecks {
         todoConflictAndDedupChecks(port);
         scheduleChecks(port);
         emptyRoomPersistsChecks(port);
+        todoScheduleMissingFieldChecks(port);
 
         System.out.println("\n통과 " + passed + "건");
         server.stop();
@@ -1037,5 +1038,71 @@ public final class ServerChecks {
         a.expectError("INVALID_TODO", "방에 없는 새 담당자로는 변경 불가");
 
         a.close(); b.close(); c.close();
+    }
+
+    /**
+     * 2주차 때 팀원이 발견한 "필드 누락 → NPE로 연결 종료" 문제가 3주차 할 일·일정 요청에도 없는지
+     * 확인한다. 필드를 정말로 빈 문자열이 아니라 아예 보내지 않는 방식(진짜 누락)으로 재현한다.
+     */
+    private static void todoScheduleMissingFieldChecks(int port) throws Exception {
+        Client a = new Client(port); a.hello("누락-가");
+        a.send("ROOM_CREATE", "누락방");
+        String room = a.expect("ROOM_JOINED").field(0);
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+
+        String id1 = uuid();
+        a.send("TODO_CREATE", id1, room); // title·sourceSender·sourceText·assignee·dueDate·dueTime 전부 누락
+        Message e1 = a.expect("ERROR");
+        check(e1.field(0).equals("INVALID_TODO") && e1.field(2).equals(id1), "TODO_CREATE 필드 대거 누락 시 ERROR(연결 유지)");
+
+        String id2 = uuid();
+        a.send("TODO_EDIT", id2, "t1"); // expectedRevision·title·assignee·dueDate·dueTime 누락
+        Message e2 = a.expect("ERROR");
+        check(e2.field(2).equals(id2), "TODO_EDIT 필드 누락 시 ERROR(연결 유지)");
+
+        String id3 = uuid();
+        a.send("TODO_COMPLETE", id3, "t1"); // expectedRevision·done 누락
+        Message e3 = a.expect("ERROR");
+        check(e3.field(2).equals(id3), "TODO_COMPLETE 필드 누락 시 ERROR(연결 유지)");
+
+        String id4 = uuid();
+        a.send("TODO_DELETE", id4); // todoId·expectedRevision 누락
+        Message e4 = a.expect("ERROR");
+        check(e4.field(0).equals("TODO_NOT_FOUND") && e4.field(2).equals(id4), "TODO_DELETE 필드 누락 시 ERROR(연결 유지)");
+
+        a.send("TODO_LIST"); // roomId 누락
+        a.expectError("NOT_IN_ROOM", "TODO_LIST roomId 누락 시 ERROR(연결 유지)");
+
+        String id5 = uuid();
+        a.send("SCHEDULE_CREATE", id5, room); // date·title·time·memo 누락
+        Message e5 = a.expect("ERROR");
+        check(e5.field(0).equals("INVALID_SCHEDULE") && e5.field(2).equals(id5), "SCHEDULE_CREATE 필드 누락 시 ERROR(연결 유지)");
+
+        String id6 = uuid();
+        a.send("SCHEDULE_EDIT", id6, "d1"); // expectedRevision·date·title·time·memo 누락
+        Message e6 = a.expect("ERROR");
+        check(e6.field(2).equals(id6), "SCHEDULE_EDIT 필드 누락 시 ERROR(연결 유지)");
+
+        String id7 = uuid();
+        a.send("SCHEDULE_DELETE", id7); // scheduleId·expectedRevision 누락
+        Message e7 = a.expect("ERROR");
+        check(e7.field(0).equals("SCHEDULE_NOT_FOUND") && e7.field(2).equals(id7), "SCHEDULE_DELETE 필드 누락 시 ERROR(연결 유지)");
+
+        a.send("SCHEDULE_LIST"); // roomId·date 누락
+        a.expectError("NOT_IN_ROOM", "SCHEDULE_LIST roomId 누락 시 ERROR(연결 유지)");
+
+        // requestId 자체도 누락(필드 0개)되는 극단적인 경우
+        a.send("TODO_CREATE");
+        Message e8 = a.expect("ERROR");
+        check(e8.field(0).equals("INVALID_TODO") && e8.field(2).isEmpty(), "TODO_CREATE 전체 필드 누락(requestId 포함) 시 ERROR");
+
+        // 연결이 여전히 살아있고 정상 요청도 처리됨을 확인(회귀 검사)
+        a.send("ROOM_LIST");
+        check(!a.expect("ROOMS").fields().isEmpty(), "필드 누락 요청들 이후에도 연결·정상 요청 처리 유지");
+        String okId = uuid();
+        a.send("TODO_CREATE", okId, room, "정상 생성", "누락-가", "본문", "", "", "");
+        check(a.expect("TODO_CREATED").field(1).equals(okId), "필드 누락 이후에도 정상적인 할 일 생성 가능");
+
+        a.close();
     }
 }
