@@ -100,13 +100,20 @@ final class Hub {
         }
     }
 
-    /** 세션별 requestId 중복 처리 기록. 같은 요청이 다시 오면 재실행 없이 이 응답을 다시 보낸다. */
+    /**
+     * 세션별 requestId 중복 처리 기록. 같은 요청이 다시 오면 재실행 없이 이 응답을 다시 보낸다.
+     * 메시지 종류도 같이 저장해야 한다 — 서로 다른 요청(예: TODO_DELETE와 SCHEDULE_DELETE)이
+     * 우연히 같은 필드 값을 가질 수 있으므로, 필드만 비교하면 다른 종류의 요청을 같은 요청으로
+     * 오인할 수 있다.
+     */
     static final class RequestRecord {
+        final String type;
         final List<String> requestFields;
         final String roomId;
         final Message response;
 
-        RequestRecord(List<String> requestFields, String roomId, Message response) {
+        RequestRecord(String type, List<String> requestFields, String roomId, Message response) {
+            this.type = type;
             this.requestFields = requestFields;
             this.roomId = roomId;
             this.response = response;
@@ -533,7 +540,11 @@ final class Hub {
             error3(s, "INVALID_TODO", "requestId가 필요합니다", "");
             return;
         }
-        if (replayIfDuplicate(s, requestId, requestFields, "INVALID_TODO")) return;
+        if (requestFields.size() != 8) {
+            error3(s, "INVALID_TODO", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "TODO_CREATE", requestId, requestFields, "INVALID_TODO")) return;
         if (s.room == null || !s.room.id.equals(roomId)) {
             error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
             return;
@@ -560,7 +571,7 @@ final class Hub {
         s.room.todos.put(todo.id, todo);
         Message created = todoNotice("TODO_CREATED", s.room.id, requestId, todo);
         for (Session member : s.room.members) member.send(created);
-        remember(s, requestId, requestFields, s.room.id, created);
+        remember(s, "TODO_CREATE", requestId, requestFields, s.room.id, created);
     }
 
     synchronized void todoEdit(Session s, List<String> requestFields, String requestId, String todoId, String expectedRevisionStr,
@@ -569,7 +580,11 @@ final class Hub {
             error3(s, "INVALID_TODO", "requestId가 필요합니다", "");
             return;
         }
-        if (replayIfDuplicate(s, requestId, requestFields, "INVALID_TODO")) return;
+        if (requestFields.size() != 7) {
+            error3(s, "INVALID_TODO", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "TODO_EDIT", requestId, requestFields, "INVALID_TODO")) return;
         if (s.room == null) {
             error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
             return;
@@ -606,7 +621,7 @@ final class Hub {
         todo.revision++;
         Message edited = todoNotice("TODO_EDITED", s.room.id, requestId, todo);
         for (Session member : s.room.members) member.send(edited);
-        remember(s, requestId, requestFields, s.room.id, edited);
+        remember(s, "TODO_EDIT", requestId, requestFields, s.room.id, edited);
     }
 
     synchronized void todoComplete(Session s, List<String> requestFields, String requestId, String todoId,
@@ -615,7 +630,11 @@ final class Hub {
             error3(s, "INVALID_TODO", "requestId가 필요합니다", "");
             return;
         }
-        if (replayIfDuplicate(s, requestId, requestFields, "INVALID_TODO")) return;
+        if (requestFields.size() != 4) {
+            error3(s, "INVALID_TODO", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "TODO_COMPLETE", requestId, requestFields, "INVALID_TODO")) return;
         if (s.room == null) {
             error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
             return;
@@ -642,7 +661,7 @@ final class Hub {
         todo.revision++;
         Message completed = Message.of("TODO_COMPLETED", s.room.id, requestId, todo.id, String.valueOf(todo.revision), doneStr);
         for (Session member : s.room.members) member.send(completed);
-        remember(s, requestId, requestFields, s.room.id, completed);
+        remember(s, "TODO_COMPLETE", requestId, requestFields, s.room.id, completed);
     }
 
     synchronized void todoDelete(Session s, List<String> requestFields, String requestId, String todoId, String expectedRevisionStr) {
@@ -650,7 +669,11 @@ final class Hub {
             error3(s, "INVALID_TODO", "requestId가 필요합니다", "");
             return;
         }
-        if (replayIfDuplicate(s, requestId, requestFields, "INVALID_TODO")) return;
+        if (requestFields.size() != 3) {
+            error3(s, "INVALID_TODO", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "TODO_DELETE", requestId, requestFields, "INVALID_TODO")) return;
         if (s.room == null) {
             error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
             return;
@@ -672,7 +695,7 @@ final class Hub {
         s.room.todos.remove(todoId);
         Message deleted = Message.of("TODO_DELETED", s.room.id, requestId, todoId);
         for (Session member : s.room.members) member.send(deleted);
-        remember(s, requestId, requestFields, s.room.id, deleted);
+        remember(s, "TODO_DELETE", requestId, requestFields, s.room.id, deleted);
     }
 
     // ---- 일정 ----
@@ -696,7 +719,11 @@ final class Hub {
             error3(s, "INVALID_SCHEDULE", "requestId가 필요합니다", "");
             return;
         }
-        if (replayIfDuplicate(s, requestId, requestFields, "INVALID_SCHEDULE")) return;
+        if (requestFields.size() != 6) {
+            error3(s, "INVALID_SCHEDULE", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "SCHEDULE_CREATE", requestId, requestFields, "INVALID_SCHEDULE")) return;
         if (s.room == null || !s.room.id.equals(roomId)) {
             error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
             return;
@@ -718,7 +745,7 @@ final class Hub {
         s.room.schedules.put(schedule.id, schedule);
         Message created = scheduleNotice("SCHEDULE_CREATED", s.room.id, requestId, schedule);
         for (Session member : s.room.members) member.send(created);
-        remember(s, requestId, requestFields, s.room.id, created);
+        remember(s, "SCHEDULE_CREATE", requestId, requestFields, s.room.id, created);
     }
 
     synchronized void scheduleEdit(Session s, List<String> requestFields, String requestId, String scheduleId, String expectedRevisionStr,
@@ -727,7 +754,11 @@ final class Hub {
             error3(s, "INVALID_SCHEDULE", "requestId가 필요합니다", "");
             return;
         }
-        if (replayIfDuplicate(s, requestId, requestFields, "INVALID_SCHEDULE")) return;
+        if (requestFields.size() != 7) {
+            error3(s, "INVALID_SCHEDULE", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "SCHEDULE_EDIT", requestId, requestFields, "INVALID_SCHEDULE")) return;
         if (s.room == null) {
             error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
             return;
@@ -761,7 +792,7 @@ final class Hub {
         schedule.revision++;
         Message edited = scheduleNotice("SCHEDULE_EDITED", s.room.id, requestId, schedule);
         for (Session member : s.room.members) member.send(edited);
-        remember(s, requestId, requestFields, s.room.id, edited);
+        remember(s, "SCHEDULE_EDIT", requestId, requestFields, s.room.id, edited);
     }
 
     synchronized void scheduleDelete(Session s, List<String> requestFields, String requestId, String scheduleId, String expectedRevisionStr) {
@@ -769,7 +800,11 @@ final class Hub {
             error3(s, "INVALID_SCHEDULE", "requestId가 필요합니다", "");
             return;
         }
-        if (replayIfDuplicate(s, requestId, requestFields, "INVALID_SCHEDULE")) return;
+        if (requestFields.size() != 3) {
+            error3(s, "INVALID_SCHEDULE", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "SCHEDULE_DELETE", requestId, requestFields, "INVALID_SCHEDULE")) return;
         if (s.room == null) {
             error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
             return;
@@ -791,7 +826,7 @@ final class Hub {
         s.room.schedules.remove(scheduleId);
         Message deleted = Message.of("SCHEDULE_DELETED", s.room.id, requestId, scheduleId);
         for (Session member : s.room.members) member.send(deleted);
-        remember(s, requestId, requestFields, s.room.id, deleted);
+        remember(s, "SCHEDULE_DELETE", requestId, requestFields, s.room.id, deleted);
     }
 
     // ---- 할 일·일정 공통 ----
@@ -826,10 +861,10 @@ final class Hub {
     }
 
     /** 중복 요청이면 처리를 끝내고 true. 새 요청이면 false(호출자가 계속 처리한다). */
-    private boolean replayIfDuplicate(Session s, String requestId, List<String> requestFields, String invalidCode) {
+    private boolean replayIfDuplicate(Session s, String type, String requestId, List<String> requestFields, String invalidCode) {
         RequestRecord record = s.plannerRequests.get(requestId);
         if (record == null) return false;
-        if (!record.requestFields.equals(requestFields)) {
+        if (!record.type.equals(type) || !record.requestFields.equals(requestFields)) {
             error3(s, invalidCode, "같은 요청 ID를 다른 내용으로 다시 보냈습니다", requestId);
             return true;
         }
@@ -841,8 +876,8 @@ final class Hub {
         return true;
     }
 
-    private void remember(Session s, String requestId, List<String> requestFields, String roomId, Message response) {
-        s.plannerRequests.put(requestId, new RequestRecord(requestFields, roomId, response));
+    private void remember(Session s, String type, String requestId, List<String> requestFields, String roomId, Message response) {
+        s.plannerRequests.put(requestId, new RequestRecord(type, requestFields, roomId, response));
     }
 
     // ---- 메시지 생성·전송 ----

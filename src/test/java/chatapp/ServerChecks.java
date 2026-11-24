@@ -258,6 +258,7 @@ public final class ServerChecks {
         scheduleChecks(port);
         emptyRoomPersistsChecks(port);
         todoScheduleMissingFieldChecks(port);
+        todoScheduleReviewFixChecks(port);
 
         System.out.println("\n통과 " + passed + "건");
         server.stop();
@@ -1068,7 +1069,7 @@ public final class ServerChecks {
         String id4 = uuid();
         a.send("TODO_DELETE", id4); // todoId·expectedRevision 누락
         Message e4 = a.expect("ERROR");
-        check(e4.field(0).equals("TODO_NOT_FOUND") && e4.field(2).equals(id4), "TODO_DELETE 필드 누락 시 ERROR(연결 유지)");
+        check(e4.field(0).equals("INVALID_TODO") && e4.field(2).equals(id4), "TODO_DELETE 필드 누락 시 ERROR(연결 유지)");
 
         a.send("TODO_LIST"); // roomId 누락
         a.expectError("NOT_IN_ROOM", "TODO_LIST roomId 누락 시 ERROR(연결 유지)");
@@ -1086,7 +1087,7 @@ public final class ServerChecks {
         String id7 = uuid();
         a.send("SCHEDULE_DELETE", id7); // scheduleId·expectedRevision 누락
         Message e7 = a.expect("ERROR");
-        check(e7.field(0).equals("SCHEDULE_NOT_FOUND") && e7.field(2).equals(id7), "SCHEDULE_DELETE 필드 누락 시 ERROR(연결 유지)");
+        check(e7.field(0).equals("INVALID_SCHEDULE") && e7.field(2).equals(id7), "SCHEDULE_DELETE 필드 누락 시 ERROR(연결 유지)");
 
         a.send("SCHEDULE_LIST"); // roomId·date 누락
         a.expectError("NOT_IN_ROOM", "SCHEDULE_LIST roomId 누락 시 ERROR(연결 유지)");
@@ -1102,6 +1103,84 @@ public final class ServerChecks {
         String okId = uuid();
         a.send("TODO_CREATE", okId, room, "정상 생성", "누락-가", "본문", "", "", "");
         check(a.expect("TODO_CREATED").field(1).equals(okId), "필드 누락 이후에도 정상적인 할 일 생성 가능");
+
+        a.close();
+    }
+
+    /** 지원님 리뷰(머지 전 P2 2건)에서 지적된 두 문제를 실제로 재현해 수정을 확인한다. */
+    private static void todoScheduleReviewFixChecks(int port) throws Exception {
+        Client a = new Client(port); a.hello("리뷰-가");
+        a.send("ROOM_CREATE", "리뷰방");
+        String room = a.expect("ROOM_JOINED").field(0);
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+
+        // [1] 중복 요청 캐시는 메시지 종류까지 비교해야 한다.
+        String todoRequestId = uuid();
+        a.send("TODO_CREATE", todoRequestId, room, "삭제될 할 일", "리뷰-가", "본문", "", "", "");
+        String todoId = a.expect("TODO_CREATED").field(2);
+        String scheduleRequestId = uuid();
+        a.send("SCHEDULE_CREATE", scheduleRequestId, room, "2026-12-01", "삭제될 일정", "", "");
+        String scheduleId = a.expect("SCHEDULE_CREATED").field(2);
+
+        String sharedId = uuid();
+        a.send("TODO_DELETE", sharedId, todoId, "1");
+        Message todoDeleted = a.expect("TODO_DELETED");
+        check(todoDeleted.fields().equals(List.of(room, sharedId, todoId)), "TODO_DELETE 정상 처리");
+
+        // 같은 requestId, 같은 필드 값이지만 '종류'가 다른 요청 → 캐시를 그대로 재전송하면 안 된다.
+        a.send("SCHEDULE_DELETE", sharedId, todoId, "1");
+        Message mismatch = a.expect("ERROR");
+        check(mismatch.field(0).equals("INVALID_SCHEDULE") && mismatch.field(2).equals(sharedId),
+                "같은 requestId·필드라도 메시지 종류가 다르면 거부(TODO_DELETED가 재전송되면 안 됨)");
+
+        // 원래 TODO_DELETE 기록은 그대로 남아있어야 한다: 같은 종류·같은 내용으로 다시 보내면 정상 재생.
+        a.send("TODO_DELETE", sharedId, todoId, "1");
+        Message replay = a.expect("TODO_DELETED");
+        check(replay.fields().equals(todoDeleted.fields()), "원래 TODO_DELETE 기록은 보존되어 재전송됨");
+
+        // 방금 만든 일정은 그대로 남아있어야 한다(SCHEDULE_DELETE가 잘못 처리되지 않았으므로).
+        a.send("SCHEDULE_LIST", room, "");
+        check(a.expect("SCHEDULE_LIST_START").field(1).equals("1"), "일정은 삭제되지 않고 그대로 남음");
+        a.expect("SCHEDULE_ITEM"); a.expect("SCHEDULE_LIST_END");
+
+        // [2] 선택 입력 필드를 통째로 생략하면 기존 값을 지우지 말고 오류로 거부해야 한다.
+        String fullId = uuid();
+        a.send("TODO_CREATE", fullId, room, "담당자·마감일 있는 할 일", "리뷰-가", "본문", "", "2026-12-01", "12:00");
+        Message full = a.expect("TODO_CREATED");
+        String fullTodoId = full.field(2);
+        check(full.field(7).equals("2026-12-01") && full.field(8).equals("12:00"), "초기 마감일·시간 확인");
+
+        a.send("TODO_EDIT", uuid(), fullTodoId, "1", "제목만 보낸 수정"); // assignee·dueDate·dueTime 필드 자체 생략
+        Message partial = a.expect("ERROR");
+        check(partial.field(0).equals("INVALID_TODO"), "뒤쪽 필드가 생략된 TODO_EDIT는 거부됨");
+
+        a.send("TODO_LIST", room);
+        int count = Integer.parseInt(a.expect("TODO_LIST_START").field(1));
+        Message stillFull = null;
+        for (int i = 0; i < count; i++) {
+            Message item = a.expect("TODO_ITEM");
+            if (item.field(0).equals(fullTodoId)) stillFull = item;
+        }
+        a.expect("TODO_LIST_END");
+        check(stillFull != null && stillFull.field(1).equals("1") && stillFull.field(5).equals("2026-12-01") && stillFull.field(6).equals("12:00"),
+                "필드 생략 요청이 거부된 뒤에도 기존 마감일·시간이 지워지지 않음(revision도 그대로)");
+
+        // SCHEDULE_EDIT도 같은 구조(time/memo 생략)로 확인한다.
+        String fullScheduleRequestId = uuid();
+        a.send("SCHEDULE_CREATE", fullScheduleRequestId, room, "2026-12-25", "시간·메모 있는 일정", "19:00", "선물 사기");
+        Message fullSchedule = a.expect("SCHEDULE_CREATED");
+        String fullScheduleId = fullSchedule.field(2);
+
+        a.send("SCHEDULE_EDIT", uuid(), fullScheduleId, "1", "2026-12-25", "제목만 수정"); // time·memo 필드 생략
+        Message partialSchedule = a.expect("ERROR");
+        check(partialSchedule.field(0).equals("INVALID_SCHEDULE"), "뒤쪽 필드가 생략된 SCHEDULE_EDIT도 거부됨");
+
+        a.send("SCHEDULE_LIST", room, "2026-12-25");
+        a.expect("SCHEDULE_LIST_START");
+        Message scheduleItem = a.expect("SCHEDULE_ITEM");
+        a.expect("SCHEDULE_LIST_END");
+        check(scheduleItem.field(1).equals("1") && scheduleItem.field(4).equals("19:00") && scheduleItem.field(5).equals("선물 사기"),
+                "필드 생략 요청이 거부된 뒤에도 기존 시간·메모가 지워지지 않음(revision도 그대로)");
 
         a.close();
     }
