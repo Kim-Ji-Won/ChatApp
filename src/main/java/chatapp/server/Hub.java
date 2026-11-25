@@ -1,6 +1,9 @@
 package chatapp.server;
 
 import chatapp.common.Message;
+import java.time.DateTimeException;
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -22,10 +25,11 @@ import java.util.concurrent.TimeUnit;
  * Session.send는 전송 대기열에 넣기만 하므로, 락 안에서 여러 연결에 보내도 느린 연결 때문에 멈추지 않는다.
  * Session.send는 전송 대기열에 넣기만 하므로, 락 안에서 여러 연결에 보내도 느린 연결 때문에 멈추지 않는다.
  *
- * 정책(docs/protocol.md의 공동 확정 사항):
+ * 정책(docs/protocol.md, docs/protocol-week3.md의 공동 확정 사항):
  *  - 한 사용자는 한 방에만 있을 수 있다. 방에 있는 상태의 ROOM_CREATE/ROOM_JOIN은 ERROR(INVALID_ROOM).
  *    (클라이언트는 ROOM_LEAVE → ROOM_LEFT 확인 후 다음 방을 요청한다.)
- *  - 참가자가 0명이 된 방은 삭제한다.
+ *  - 참가자가 0명이 된 방도 삭제하지 않는다(3주차: 방의 할 일·일정을 보존하기 위해). 사용자가 직접
+ *    방을 지우는 기능은 없다. 서버 재시작 시에는 모든 방·할 일·일정이 함께 초기화된다.
  *  - 접속이 끊기면 닉네임을 바로 다시 쓸 수 있다.
  *  - 방 목록·인원 변동은 접속자 전체에게 ROOMS로 보낸다.
  */
@@ -41,10 +45,78 @@ final class Hub {
         final String name;
         final Set<Session> members = new LinkedHashSet<>();
         Game game;
+        final Map<String, Todo> todos = new LinkedHashMap<>();
+        final Map<String, Schedule> schedules = new LinkedHashMap<>();
 
         Room(String id, String name) {
             this.id = id;
             this.name = name;
+        }
+    }
+
+    /** 채팅 메시지에서 만드는 할 일. 원문(sourceSender·sourceText)은 생성 시점의 사본이며 이후 바뀌지 않는다. */
+    static final class Todo {
+        final String id;
+        final String author;
+        final String sourceSender;
+        final String sourceText;
+        long revision;
+        String title;
+        String assignee;
+        String dueDate;
+        String dueTime;
+        boolean done;
+
+        Todo(String id, String author, String sourceSender, String sourceText) {
+            this.id = id;
+            this.author = author;
+            this.sourceSender = sourceSender;
+            this.sourceText = sourceText;
+        }
+
+        List<String> fields() {
+            return List.of(id, String.valueOf(revision), title, author, assignee, dueDate, dueTime,
+                    done ? "1" : "0", sourceSender, sourceText);
+        }
+    }
+
+    /** 방별 약속(일정). */
+    static final class Schedule {
+        final String id;
+        final String author;
+        long revision;
+        String date;
+        String title;
+        String time;
+        String memo;
+
+        Schedule(String id, String author) {
+            this.id = id;
+            this.author = author;
+        }
+
+        List<String> fields() {
+            return List.of(id, String.valueOf(revision), date, title, time, memo, author);
+        }
+    }
+
+    /**
+     * 세션별 requestId 중복 처리 기록. 같은 요청이 다시 오면 재실행 없이 이 응답을 다시 보낸다.
+     * 메시지 종류도 같이 저장해야 한다 — 서로 다른 요청(예: TODO_DELETE와 SCHEDULE_DELETE)이
+     * 우연히 같은 필드 값을 가질 수 있으므로, 필드만 비교하면 다른 종류의 요청을 같은 요청으로
+     * 오인할 수 있다.
+     */
+    static final class RequestRecord {
+        final String type;
+        final List<String> requestFields;
+        final String roomId;
+        final Message response;
+
+        RequestRecord(String type, List<String> requestFields, String roomId, Message response) {
+            this.type = type;
+            this.requestFields = requestFields;
+            this.roomId = roomId;
+            this.response = response;
         }
     }
 
@@ -70,6 +142,8 @@ final class Hub {
     private final Random random;
     private int nextRoomNumber = 1;
     private int nextGameNumber = 1;
+    private int nextTodoNumber = 1;
+    private int nextScheduleNumber = 1;
 
     Hub() {
         this(30_000, new Random());
@@ -97,8 +171,35 @@ final class Hub {
         return s;
     }
 
+    /** title/room-name처럼 한 줄만 허용하는 기존 clean()과 달리, 줄바꿈(\n)만 허용하고 길이 하한을 받는다. */
+    private static String cleanMultiline(String raw, int min, int max) {
+        if (raw == null || raw.length() < min || raw.length() > max) return null;
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (Character.isISOControl(c) && c != '\n') return null;
+        }
+        return raw;
+    }
+
+    private static boolean validDate(String date) {
+        if (date.isEmpty()) return true;
+        if (!date.matches("\\d{4}-\\d{2}-\\d{2}")) return false;
+        try { LocalDate.parse(date); return true; } catch (DateTimeException e) { return false; }
+    }
+
+    private static boolean validTime(String time) {
+        if (time.isEmpty()) return true;
+        if (!time.matches("\\d{2}:\\d{2}")) return false;
+        try { LocalTime.parse(time); return true; } catch (DateTimeException e) { return false; }
+    }
+
     private static void error(Session s, String code, String description) {
         s.send(Message.of("ERROR", code, description));
+    }
+
+    /** 할 일·일정 생성·수정·완료·삭제 요청의 오류 응답(3필드: code, description, requestId). */
+    private static void error3(Session s, String code, String description, String requestId) {
+        s.send(Message.of("ERROR", code, description, requestId == null ? "" : requestId));
     }
 
     // ---- 접속 ----
@@ -194,9 +295,7 @@ final class Hub {
         s.room = null;
         leaveGame(room, s);
         if (notifySelf) s.send(Message.of("ROOM_LEFT"));
-        if (room.members.isEmpty()) {
-            rooms.remove(room.id);
-        } else {
+        if (!room.members.isEmpty()) {
             Message notice = Message.of("SYSTEM", room.id, s.nickname + "님이 퇴장했습니다");
             Message userList = usersMessage(room);
             for (Session member : room.members) {
@@ -420,6 +519,365 @@ final class Hub {
         Message message = Message.of("WHISPER_MESSAGE", s.room.id, s.nickname, target, text);
         s.send(message);
         targetSession.send(message);
+    }
+
+    // ---- 할 일 ----
+
+    synchronized void todoList(Session s, String roomId) {
+        if (s.room == null || !s.room.id.equals(roomId)) {
+            error(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다");
+            return;
+        }
+        List<Todo> items = new ArrayList<>(s.room.todos.values());
+        s.send(Message.of("TODO_LIST_START", roomId, String.valueOf(items.size())));
+        for (Todo t : items) s.send(new Message("TODO_ITEM", t.fields()));
+        s.send(Message.of("TODO_LIST_END", roomId));
+    }
+
+    synchronized void todoCreate(Session s, List<String> requestFields, String requestId, String roomId,
+            String rawTitle, String rawSourceSender, String rawSourceText, String rawAssignee, String rawDueDate, String rawDueTime) {
+        if (requestId == null || requestId.isEmpty()) {
+            error3(s, "INVALID_TODO", "requestId가 필요합니다", "");
+            return;
+        }
+        if (requestFields.size() != 8) {
+            error3(s, "INVALID_TODO", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "TODO_CREATE", requestId, requestFields, "INVALID_TODO")) return;
+        if (s.room == null || !s.room.id.equals(roomId)) {
+            error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
+            return;
+        }
+        String title = clean(rawTitle, 80);
+        String sourceSender = clean(rawSourceSender, 20);
+        String sourceText = cleanMultiline(rawSourceText, 1, 1000);
+        String assignee = rawAssignee == null ? "" : rawAssignee;
+        String dueDate = rawDueDate == null ? "" : rawDueDate;
+        String dueTime = rawDueTime == null ? "" : rawDueTime;
+        boolean timeWithoutDate = !dueTime.isEmpty() && dueDate.isEmpty();
+        if (title == null || sourceSender == null || sourceText == null || !validDate(dueDate) || !validTime(dueTime)
+                || timeWithoutDate || (!assignee.isEmpty() && !isMember(s.room, assignee))) {
+            error3(s, "INVALID_TODO", "입력값을 확인해 주세요", requestId);
+            return;
+        }
+        Todo todo = new Todo("t" + nextTodoNumber++, s.nickname, sourceSender, sourceText);
+        todo.revision = 1;
+        todo.title = title;
+        todo.assignee = assignee;
+        todo.dueDate = dueDate;
+        todo.dueTime = dueTime;
+        todo.done = false;
+        s.room.todos.put(todo.id, todo);
+        Message created = todoNotice("TODO_CREATED", s.room.id, requestId, todo);
+        for (Session member : s.room.members) member.send(created);
+        remember(s, "TODO_CREATE", requestId, requestFields, s.room.id, created);
+    }
+
+    synchronized void todoEdit(Session s, List<String> requestFields, String requestId, String todoId, String expectedRevisionStr,
+            String rawTitle, String rawAssignee, String rawDueDate, String rawDueTime) {
+        if (requestId == null || requestId.isEmpty()) {
+            error3(s, "INVALID_TODO", "requestId가 필요합니다", "");
+            return;
+        }
+        if (requestFields.size() != 7) {
+            error3(s, "INVALID_TODO", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "TODO_EDIT", requestId, requestFields, "INVALID_TODO")) return;
+        if (s.room == null) {
+            error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
+            return;
+        }
+        Todo todo = s.room.todos.get(todoId);
+        if (todo == null) {
+            error3(s, "TODO_NOT_FOUND", "할 일을 찾을 수 없습니다", requestId);
+            return;
+        }
+        if (!s.nickname.equals(todo.author)) {
+            error3(s, "FORBIDDEN", "작성자만 수정할 수 있습니다", requestId);
+            return;
+        }
+        Long expected = parseRevision(expectedRevisionStr);
+        if (expected == null || expected != todo.revision) {
+            error3(s, "CONFLICT", "최신 내용을 먼저 확인해 주세요", requestId);
+            return;
+        }
+        String title = clean(rawTitle, 80);
+        String assignee = rawAssignee == null ? "" : rawAssignee;
+        String dueDate = rawDueDate == null ? "" : rawDueDate;
+        String dueTime = rawDueTime == null ? "" : rawDueTime;
+        boolean timeWithoutDate = !dueTime.isEmpty() && dueDate.isEmpty();
+        boolean assigneeChanged = !assignee.equals(todo.assignee);
+        if (title == null || !validDate(dueDate) || !validTime(dueTime) || timeWithoutDate
+                || (assigneeChanged && !assignee.isEmpty() && !isMember(s.room, assignee))) {
+            error3(s, "INVALID_TODO", "입력값을 확인해 주세요", requestId);
+            return;
+        }
+        todo.title = title;
+        todo.assignee = assignee;
+        todo.dueDate = dueDate;
+        todo.dueTime = dueTime;
+        todo.revision++;
+        Message edited = todoNotice("TODO_EDITED", s.room.id, requestId, todo);
+        for (Session member : s.room.members) member.send(edited);
+        remember(s, "TODO_EDIT", requestId, requestFields, s.room.id, edited);
+    }
+
+    synchronized void todoComplete(Session s, List<String> requestFields, String requestId, String todoId,
+            String expectedRevisionStr, String doneStr) {
+        if (requestId == null || requestId.isEmpty()) {
+            error3(s, "INVALID_TODO", "requestId가 필요합니다", "");
+            return;
+        }
+        if (requestFields.size() != 4) {
+            error3(s, "INVALID_TODO", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "TODO_COMPLETE", requestId, requestFields, "INVALID_TODO")) return;
+        if (s.room == null) {
+            error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
+            return;
+        }
+        Todo todo = s.room.todos.get(todoId);
+        if (todo == null) {
+            error3(s, "TODO_NOT_FOUND", "할 일을 찾을 수 없습니다", requestId);
+            return;
+        }
+        if (!s.nickname.equals(todo.author) && !s.nickname.equals(todo.assignee)) {
+            error3(s, "FORBIDDEN", "작성자 또는 담당자만 완료 상태를 바꿀 수 있습니다", requestId);
+            return;
+        }
+        Long expected = parseRevision(expectedRevisionStr);
+        if (expected == null || expected != todo.revision) {
+            error3(s, "CONFLICT", "최신 내용을 먼저 확인해 주세요", requestId);
+            return;
+        }
+        if (!"0".equals(doneStr) && !"1".equals(doneStr)) {
+            error3(s, "INVALID_TODO", "완료 값은 0 또는 1이어야 합니다", requestId);
+            return;
+        }
+        todo.done = "1".equals(doneStr);
+        todo.revision++;
+        Message completed = Message.of("TODO_COMPLETED", s.room.id, requestId, todo.id, String.valueOf(todo.revision), doneStr);
+        for (Session member : s.room.members) member.send(completed);
+        remember(s, "TODO_COMPLETE", requestId, requestFields, s.room.id, completed);
+    }
+
+    synchronized void todoDelete(Session s, List<String> requestFields, String requestId, String todoId, String expectedRevisionStr) {
+        if (requestId == null || requestId.isEmpty()) {
+            error3(s, "INVALID_TODO", "requestId가 필요합니다", "");
+            return;
+        }
+        if (requestFields.size() != 3) {
+            error3(s, "INVALID_TODO", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "TODO_DELETE", requestId, requestFields, "INVALID_TODO")) return;
+        if (s.room == null) {
+            error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
+            return;
+        }
+        Todo todo = s.room.todos.get(todoId);
+        if (todo == null) {
+            error3(s, "TODO_NOT_FOUND", "할 일을 찾을 수 없습니다", requestId);
+            return;
+        }
+        if (!s.nickname.equals(todo.author)) {
+            error3(s, "FORBIDDEN", "작성자만 삭제할 수 있습니다", requestId);
+            return;
+        }
+        Long expected = parseRevision(expectedRevisionStr);
+        if (expected == null || expected != todo.revision) {
+            error3(s, "CONFLICT", "최신 내용을 먼저 확인해 주세요", requestId);
+            return;
+        }
+        s.room.todos.remove(todoId);
+        Message deleted = Message.of("TODO_DELETED", s.room.id, requestId, todoId);
+        for (Session member : s.room.members) member.send(deleted);
+        remember(s, "TODO_DELETE", requestId, requestFields, s.room.id, deleted);
+    }
+
+    // ---- 일정 ----
+
+    synchronized void scheduleList(Session s, String roomId, String rawDate) {
+        if (s.room == null || !s.room.id.equals(roomId)) {
+            error(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다");
+            return;
+        }
+        String date = rawDate == null ? "" : rawDate;
+        List<Schedule> items = new ArrayList<>();
+        for (Schedule sc : s.room.schedules.values()) if (date.isEmpty() || date.equals(sc.date)) items.add(sc);
+        s.send(Message.of("SCHEDULE_LIST_START", roomId, String.valueOf(items.size())));
+        for (Schedule sc : items) s.send(new Message("SCHEDULE_ITEM", sc.fields()));
+        s.send(Message.of("SCHEDULE_LIST_END", roomId));
+    }
+
+    synchronized void scheduleCreate(Session s, List<String> requestFields, String requestId, String roomId,
+            String rawDate, String rawTitle, String rawTime, String rawMemo) {
+        if (requestId == null || requestId.isEmpty()) {
+            error3(s, "INVALID_SCHEDULE", "requestId가 필요합니다", "");
+            return;
+        }
+        if (requestFields.size() != 6) {
+            error3(s, "INVALID_SCHEDULE", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "SCHEDULE_CREATE", requestId, requestFields, "INVALID_SCHEDULE")) return;
+        if (s.room == null || !s.room.id.equals(roomId)) {
+            error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
+            return;
+        }
+        String title = clean(rawTitle, 80);
+        String date = rawDate == null ? "" : rawDate;
+        String time = rawTime == null ? "" : rawTime;
+        String memo = cleanMultiline(rawMemo == null ? "" : rawMemo, 0, 500);
+        if (title == null || date.isEmpty() || !validDate(date) || !validTime(time) || memo == null) {
+            error3(s, "INVALID_SCHEDULE", "입력값을 확인해 주세요", requestId);
+            return;
+        }
+        Schedule schedule = new Schedule("d" + nextScheduleNumber++, s.nickname);
+        schedule.revision = 1;
+        schedule.date = date;
+        schedule.title = title;
+        schedule.time = time;
+        schedule.memo = memo;
+        s.room.schedules.put(schedule.id, schedule);
+        Message created = scheduleNotice("SCHEDULE_CREATED", s.room.id, requestId, schedule);
+        for (Session member : s.room.members) member.send(created);
+        remember(s, "SCHEDULE_CREATE", requestId, requestFields, s.room.id, created);
+    }
+
+    synchronized void scheduleEdit(Session s, List<String> requestFields, String requestId, String scheduleId, String expectedRevisionStr,
+            String rawDate, String rawTitle, String rawTime, String rawMemo) {
+        if (requestId == null || requestId.isEmpty()) {
+            error3(s, "INVALID_SCHEDULE", "requestId가 필요합니다", "");
+            return;
+        }
+        if (requestFields.size() != 7) {
+            error3(s, "INVALID_SCHEDULE", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "SCHEDULE_EDIT", requestId, requestFields, "INVALID_SCHEDULE")) return;
+        if (s.room == null) {
+            error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
+            return;
+        }
+        Schedule schedule = s.room.schedules.get(scheduleId);
+        if (schedule == null) {
+            error3(s, "SCHEDULE_NOT_FOUND", "일정을 찾을 수 없습니다", requestId);
+            return;
+        }
+        if (!s.nickname.equals(schedule.author)) {
+            error3(s, "FORBIDDEN", "작성자만 수정할 수 있습니다", requestId);
+            return;
+        }
+        Long expected = parseRevision(expectedRevisionStr);
+        if (expected == null || expected != schedule.revision) {
+            error3(s, "CONFLICT", "최신 내용을 먼저 확인해 주세요", requestId);
+            return;
+        }
+        String title = clean(rawTitle, 80);
+        String date = rawDate == null ? "" : rawDate;
+        String time = rawTime == null ? "" : rawTime;
+        String memo = cleanMultiline(rawMemo == null ? "" : rawMemo, 0, 500);
+        if (title == null || date.isEmpty() || !validDate(date) || !validTime(time) || memo == null) {
+            error3(s, "INVALID_SCHEDULE", "입력값을 확인해 주세요", requestId);
+            return;
+        }
+        schedule.date = date;
+        schedule.title = title;
+        schedule.time = time;
+        schedule.memo = memo;
+        schedule.revision++;
+        Message edited = scheduleNotice("SCHEDULE_EDITED", s.room.id, requestId, schedule);
+        for (Session member : s.room.members) member.send(edited);
+        remember(s, "SCHEDULE_EDIT", requestId, requestFields, s.room.id, edited);
+    }
+
+    synchronized void scheduleDelete(Session s, List<String> requestFields, String requestId, String scheduleId, String expectedRevisionStr) {
+        if (requestId == null || requestId.isEmpty()) {
+            error3(s, "INVALID_SCHEDULE", "requestId가 필요합니다", "");
+            return;
+        }
+        if (requestFields.size() != 3) {
+            error3(s, "INVALID_SCHEDULE", "요청 필드 수가 올바르지 않습니다", requestId);
+            return;
+        }
+        if (replayIfDuplicate(s, "SCHEDULE_DELETE", requestId, requestFields, "INVALID_SCHEDULE")) return;
+        if (s.room == null) {
+            error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
+            return;
+        }
+        Schedule schedule = s.room.schedules.get(scheduleId);
+        if (schedule == null) {
+            error3(s, "SCHEDULE_NOT_FOUND", "일정을 찾을 수 없습니다", requestId);
+            return;
+        }
+        if (!s.nickname.equals(schedule.author)) {
+            error3(s, "FORBIDDEN", "작성자만 삭제할 수 있습니다", requestId);
+            return;
+        }
+        Long expected = parseRevision(expectedRevisionStr);
+        if (expected == null || expected != schedule.revision) {
+            error3(s, "CONFLICT", "최신 내용을 먼저 확인해 주세요", requestId);
+            return;
+        }
+        s.room.schedules.remove(scheduleId);
+        Message deleted = Message.of("SCHEDULE_DELETED", s.room.id, requestId, scheduleId);
+        for (Session member : s.room.members) member.send(deleted);
+        remember(s, "SCHEDULE_DELETE", requestId, requestFields, s.room.id, deleted);
+    }
+
+    // ---- 할 일·일정 공통 ----
+
+    private static boolean isMember(Room room, String nickname) {
+        for (Session member : room.members) if (member.nickname.equals(nickname)) return true;
+        return false;
+    }
+
+    private static Long parseRevision(String raw) {
+        try {
+            return Long.parseLong(raw);
+        } catch (NumberFormatException | NullPointerException e) {
+            return null;
+        }
+    }
+
+    private static Message todoNotice(String type, String roomId, String requestId, Todo todo) {
+        List<String> fields = new ArrayList<>();
+        fields.add(roomId);
+        fields.add(requestId);
+        fields.addAll(todo.fields());
+        return new Message(type, fields);
+    }
+
+    private static Message scheduleNotice(String type, String roomId, String requestId, Schedule schedule) {
+        List<String> fields = new ArrayList<>();
+        fields.add(roomId);
+        fields.add(requestId);
+        fields.addAll(schedule.fields());
+        return new Message(type, fields);
+    }
+
+    /** 중복 요청이면 처리를 끝내고 true. 새 요청이면 false(호출자가 계속 처리한다). */
+    private boolean replayIfDuplicate(Session s, String type, String requestId, List<String> requestFields, String invalidCode) {
+        RequestRecord record = s.plannerRequests.get(requestId);
+        if (record == null) return false;
+        if (!record.type.equals(type) || !record.requestFields.equals(requestFields)) {
+            error3(s, invalidCode, "같은 요청 ID를 다른 내용으로 다시 보냈습니다", requestId);
+            return true;
+        }
+        if (s.room != null && s.room.id.equals(record.roomId)) {
+            s.send(record.response);
+        } else {
+            error3(s, "FORBIDDEN", "그 사이 방을 벗어나 이전 요청을 다시 처리할 수 없습니다", requestId);
+        }
+        return true;
+    }
+
+    private void remember(Session s, String type, String requestId, List<String> requestFields, String roomId, Message response) {
+        s.plannerRequests.put(requestId, new RequestRecord(type, requestFields, roomId, response));
     }
 
     // ---- 메시지 생성·전송 ----
