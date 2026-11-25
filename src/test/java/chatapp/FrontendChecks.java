@@ -71,14 +71,16 @@ public final class FrontendChecks {
             click(panel, "demo");
             check(status(panel).contains("닉네임"), "빈 닉네임 거부");
             set(panel, "nickname", "김지원"); click(panel, "demo");
-            await(() -> listSize(panel, "roomList") == 2, "데모 방 목록");
+            await(() -> listSize(panel, "roomList") == 4, "데모 방 목록");
             set(panel, "roomSearch", "먹지");
             check(listSize(panel,"roomList")==1, "대화 이름 검색");
             set(panel, "roomSearch", "없는이름");
             check(listSize(panel,"roomList")==0, "검색 결과 없을 때 입장 방지");
             set(panel, "roomSearch", "");
-            check(listSize(panel,"roomList")==2, "검색 해제 후 전체 목록 복원");
+            check(listSize(panel,"roomList")==4, "검색 해제 후 전체 목록 복원");
             snapshot(panel, "02-lobby.png");
+            check(ui(() -> active(find(panel, "roomList")) && !active(find(panel, "transcript"))
+                    && find(panel, "roomList").getWidth() > panel.getWidth()/2), "접속 후 목록을 넓게 표시");
             click(panel,"newConversation");
             check(ui(() -> field(panel,"roomName").isVisible() && field(panel,"roomName").getParent().isVisible()), "새 대화 입력 영역 열기");
             set(panel, "roomName", "1주차 프론트엔드 회의"); click(panel, "create");
@@ -92,7 +94,18 @@ public final class FrontendChecks {
             set(panel, "messageInput", "다음 단계는 정윤님과 프로토콜 검토입니다."); click(panel, "send");
             await(() -> textArea(panel).contains("프로토콜 검토"), "연속 메시지 전송");
             snapshot(panel, "03-chat.png");
-            check(ui(() -> active(find(panel,"roomList"))), "채팅 중 왼쪽 목록 유지");
+            check(ui(() -> {
+                JLabel title = (JLabel)find(panel, "roomTitle");
+                return title.getWidth() >= title.getPreferredSize().width;
+            }), "보통 길이의 방 이름을 계획 버튼 옆에 모두 표시");
+            check(!ui(() -> active(find(panel,"roomList"))) && ui(() -> active(find(panel,"transcript"))), "입장하면 채팅방만 표시");
+            set(panel, "messageInput", "계속 쓸 초안");
+            click(panel, "backToRooms");
+            check(ui(() -> active(find(panel,"roomList")) && !active(find(panel,"transcript"))), "목록으로 돌아가면 목록만 표시");
+            selectRoom(panel, "1주차 프론트엔드 회의"); openSelected(panel);
+            check(textArea(panel).contains("프로토콜 검토") && ui(() -> active(find(panel,"transcript"))
+                    && field(panel,"messageInput").getText().equals("계속 쓸 초안")), "같은 방 복귀 시 대화와 초안 보존");
+            set(panel, "messageInput", "");
             check(!ui(() -> find(panel,"membersPanel").isVisible()), "멤버 패널 기본 접힘");
             click(panel,"membersToggle");
             check(ui(() -> find(panel,"membersPanel").isVisible()), "멤버 패널 펼치기");
@@ -102,6 +115,7 @@ public final class FrontendChecks {
             click(panel,"membersToggle");
             check(!ui(() -> find(panel,"membersPanel").isVisible()), "멤버 패널 다시 접기");
             check(!ui(() -> find(panel,"status").isVisible()), "정상 전송 안내 숨김");
+            click(panel,"backToRooms");
             selectRoom(panel,"오늘 뭐 먹지?");
             check(highlightedRooms(panel).equals(List.of("1주차 프론트엔드 회의")), "다른 항목 선택 중에도 열린 방만 강조");
             openSelected(panel);
@@ -109,18 +123,31 @@ public final class FrontendChecks {
             check(highlightedRooms(panel).equals(List.of("오늘 뭐 먹지?")), "방 전환 후 새 방만 강조");
             snapshot(panel,"08-room-selection.png");
             check(!textArea(panel).contains("프로토콜 검토"), "전환한 방에 이전 대화 미표시");
-            click(panel, "leave");
+            Week3Checks.leaveViaMenu(panel);
             await(() -> status(panel).contains("로비로"), "방 퇴장");
             check(highlightedRooms(panel).isEmpty(), "퇴장 후 열린 방 강조 해제");
+            check(ui(() -> active(find(panel,"roomList"))), "퇴장하면 대화 목록으로 복귀");
             check(!ui(() -> field(panel,"roomName").getParent().isVisible()), "방 생성 후 입력 영역 접기");
             snapshot(panel,"05-lobby-recent.png");
             selectRoom(panel,"우리들의 아지트");
             edt(() -> { ((JList<?>)find(panel,"roomList")).getActionMap().get("openRoom").actionPerformed(new java.awt.event.ActionEvent(panel,0,"openRoom")); return null; });
             await(() -> label(panel, "roomTitle").equals("우리들의 아지트"), "기존 방 입장");
             check(!textArea(panel).contains("접속·로비·채팅 화면"), "이전 방 대화 격리");
-            click(panel, "disconnect");
+            click(panel, "backToRooms");
+            edt(() -> {
+                JMenu menu = (JMenu)find(panel, "lobbyMenu");
+                check(active(menu) && !active(find(panel, "disconnect")), "목록 상단에 계정 메뉴만 표시");
+                menu.doClick();
+                check(menu.getMenuComponent(0) instanceof JLabel account
+                        && account.getText().equals("김지원 · 데모"), "목록 메뉴의 닉네임과 접속 상태");
+                JMenuItem endSession = menu.getItem(menu.getItemCount() - 1);
+                check("연결 종료".equals(endSession.getText()), "목록 메뉴에서 연결 종료");
+                MenuSelectionManager.defaultManager().clearSelectedPath();
+                endSession.doClick();
+                return null;
+            });
             await(() -> enabled(panel, "demo"), "명시적 연결 종료");
-            click(panel, "demo"); await(() -> listSize(panel, "roomList") == 2, "재접속 시 데모 초기화");
+            click(panel, "demo"); await(() -> listSize(panel, "roomList") == 4, "재접속 시 데모 초기화");
         } finally { edt(() -> { panel.close(); return null; }); }
     }
     private static void socketUiChecks() throws Exception {
@@ -174,6 +201,7 @@ public final class FrontendChecks {
                 check(!textArea(panel).contains("다른 방 내용"), "다른 방 이벤트 표시 차단");
                 await(() -> status(panel).contains("테스트 오류 안내"), "서버 오류 화면 표시");
                 check(ui(() -> find(panel,"status").isVisible()), "서버 오류는 숨기지 않음");
+                click(panel, "backToRooms");
                 edt(() -> { ((JList<?>)find(panel,"roomList")).setSelectedIndex(1); return null; });
                 openSelected(panel);
                 await(() -> status(panel).contains("테스트 퇴장 거부"), "방 전환 실패 안내");
@@ -205,7 +233,7 @@ public final class FrontendChecks {
         ChatPanel panel = edt(ChatPanel::new);
         try {
             set(panel,"nickname","김지원"); click(panel,"demo");
-            await(() -> listSize(panel,"roomList")==2,"미리보기 데모 준비");
+            await(() -> listSize(panel,"roomList")==4,"미리보기 데모 준비");
             set(panel,"roomName","퇴근 후 수다"); click(panel,"create");
             await(() -> listSize(panel,"users")==1,"미리보기 입장");
             edt(() -> {
@@ -294,7 +322,7 @@ public final class FrontendChecks {
     private static void draftChecks() throws Exception {
         ChatPanel panel=edt(ChatPanel::new);
         try {
-            set(panel,"nickname","김지원");click(panel,"demo");await(() -> listSize(panel,"roomList")==2,"초안 검사 접속");
+            set(panel,"nickname","김지원");click(panel,"demo");await(() -> listSize(panel,"roomList")==4,"초안 검사 접속");
             selectRoom(panel,"우리들의 아지트");openSelected(panel);await(() -> label(panel,"roomTitle").equals("우리들의 아지트"),"A방 입장");
             set(panel,"messageInput","A방에 남긴 초안");
             selectRoom(panel,"오늘 뭐 먹지?");openSelected(panel);await(() -> label(panel,"roomTitle").equals("오늘 뭐 먹지?"),"B방 입장");
@@ -310,8 +338,8 @@ public final class FrontendChecks {
             selectRoom(panel,"우리들의 아지트");openSelected(panel);await(() -> label(panel,"roomTitle").equals("우리들의 아지트"),"정렬 후 A방 이동");
             selectRoom(panel,"오늘 뭐 먹지?");openSelected(panel);await(() -> label(panel,"roomTitle").equals("오늘 뭐 먹지?"),"전송 후 B방 재입장");
             check(ui(() -> field(panel,"messageInput").getText()).isEmpty(),"전송한 초안은 다시 나타나지 않음");
-            set(panel,"messageInput","재시작 전 초안");click(panel,"disconnect");click(panel,"demo");
-            await(() -> listSize(panel,"roomList")==2,"세션 재연결");selectRoom(panel,"오늘 뭐 먹지?");openSelected(panel);
+            set(panel,"messageInput","재시작 전 초안");Week3Checks.clickRoomMenu(panel,"연결 종료");click(panel,"demo");
+            await(() -> listSize(panel,"roomList")==4,"세션 재연결");selectRoom(panel,"오늘 뭐 먹지?");openSelected(panel);
             await(() -> label(panel,"roomTitle").equals("오늘 뭐 먹지?"),"새 세션 방 입장");
             check(ui(() -> field(panel,"messageInput").getText()).isEmpty(),"다른 세션에 초안 전달하지 않음");
         } finally { edt(() -> { panel.close(); return null; }); }
@@ -376,7 +404,7 @@ public final class FrontendChecks {
                 Message.of("WHISPER_MESSAGE","r1","김지원","민수","성공 확인").write(out);
                 await(() -> ui(() -> field(panel,"whisperInput").getText()).isEmpty(), "성공한 귓속말 초안 비우기");
                 snapshot(panel,"08-week2-whisper.png");
-                click(panel,"leave"); requests.poll(5,TimeUnit.SECONDS);
+                Week3Checks.leaveViaMenu(panel); requests.poll(5,TimeUnit.SECONDS);
                 Message.of("ROOM_LEFT").write(out);
                 await(() -> !ui(() -> find(panel,"whisperComposer").isVisible()), "방 퇴장 시 귓속말 입력 닫기");
                 check(!enabled(panel,"sendWhisper"), "퇴장 후 귓속말 비활성화");
@@ -491,12 +519,12 @@ public final class FrontendChecks {
                 await(() -> label(panel,"gameStatus").equals("승리 · 김지원, 정윤"),"중도 입장 관전 결과와 복수 승자 표시");
                 Message.of("GAME_RESULT","g6","2","김지원","ROCK","정윤","SCISSORS","1","김지원").write(out);
                 await(() -> ui(() -> ((JComponent)find(panel,"gameStage")).getClientProperty("phase")).equals("reveal"),"다음 결과 공개 도중 퇴장 준비");
-                click(panel,"leave"); requests.poll(5,TimeUnit.SECONDS); Message.of("ROOM_LEFT").write(out);
+                Week3Checks.leaveViaMenu(panel); requests.poll(5,TimeUnit.SECONDS); Message.of("ROOM_LEFT").write(out);
                 await(() -> !ui(() -> find(panel,"gamePanel").isVisible()),"퇴장 시 게임 화면 초기화");
                 check(!gameAnimationRunning(panel),"결과 연출 중 퇴장하면 타이머 정리");
                 check(ui(() -> ((JComponent)find(panel,"gameStage")).getClientProperty("phase")).equals("idle"),"퇴장 뒤 이전 결과 연출 제거");
                 Message.of("EMOTICON_GRANTED","g5","E08").write(out);
-                await(() -> ui(() -> ((JButton)find(panel,"emoticons")).getText()).contains("새 보상"),"방 밖에서 도착한 보상 이벤트 처리");
+                await(() -> ui(() -> ((JButton)find(panel,"emoticons")).getToolTipText()).contains("새 보상"),"방 밖에서 도착한 보상 이벤트 처리");
                 selectRoom(panel,"함께 가위바위보"); openSelected(panel); requests.poll(5,TimeUnit.SECONDS);
                 Message.of("ROOM_JOINED","r1","함께 가위바위보").write(out);
                 Message.of("ROOM_USERS","r1","김지원").write(out);
@@ -513,7 +541,7 @@ public final class FrontendChecks {
         ChatPanel panel=edt(ChatPanel::new);
         try {
             set(panel,"nickname","김지원"); click(panel,"demo");
-            await(() -> listSize(panel,"roomList")==2,"서버 없이 애니메이션 데모 접속");
+            await(() -> listSize(panel,"roomList")==4,"서버 없이 애니메이션 데모 접속");
             selectRoom(panel,"우리들의 아지트"); openSelected(panel);
             await(() -> listSize(panel,"users")==3,"가상 친구 두 명과 체험방 입장");
             click(panel,"toolsToggle"); snapshot(panel,"13-week2-composer-tools.png");
@@ -543,8 +571,8 @@ public final class FrontendChecks {
             click(panel,"closeWhisper"); click(panel,"startGame");
             await(() -> enabled(panel,"chooseROCK"),"데모 다음 판 시작");
             click(panel,"chooseROCK");
-            await(() -> enabled(panel,"leave"),"선택 응답 이후 퇴장 가능");
-            click(panel,"leave");
+            await(() -> ui(() -> find(((JMenu)find(panel,"roomMenu")).getPopupMenu(),"leave").isEnabled()),"선택 응답 이후 퇴장 가능");
+            Week3Checks.leaveViaMenu(panel);
             await(() -> status(panel).contains("로비로"),"가상 응답 대기 중 퇴장");
             selectRoom(panel,"오늘 뭐 먹지?"); openSelected(panel);
             await(() -> label(panel,"roomTitle").equals("오늘 뭐 먹지?"),"다른 데모 방 입장");
@@ -612,6 +640,7 @@ public final class FrontendChecks {
     }
     private static JTextField field(ChatPanel panel, String name) { return (JTextField) find(panel, name); }
     private static void selectRoom(ChatPanel panel, String name) throws Exception {
+        if (ui(() -> active(find(panel, "backToRooms")))) click(panel, "backToRooms");
         edt(() -> {
             JList<?> list = (JList<?>) find(panel,"roomList");
             for (int i=0;i<list.getModel().getSize();i++) if (list.getModel().getElementAt(i).toString().equals(name)) { list.setSelectedIndex(i); return null; }
