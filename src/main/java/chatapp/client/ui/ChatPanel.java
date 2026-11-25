@@ -65,6 +65,14 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
     private final DefaultListModel<String> userModel = new DefaultListModel<>();
     private final JList<String> users = new JList<>(userModel);
     private final ConversationView transcript = new ConversationView();
+    private final JPanel conversationNavigation = Theme.panel(new FlowLayout(FlowLayout.LEFT,6,0));
+    private final CardLayout roomContentCards = new CardLayout();
+    private final JPanel roomContent = Theme.panel(roomContentCards);
+    private final JButton plannerToggle = namedButton("plannerToggle", "우리의 계획", false);
+    private final JButton chatToggle = namedButton("chatToggle", "대화", false);
+    private final JButton plansTool = namedButton("plansTool", "우리의 계획", false);
+    private final PlannerPanel planner = new PlannerPanel(this::plannerRequest, this::showChat);
+
     private final JLabel identity = Theme.label("연결되지 않음", 13, false);
     private final JLabel notice = Theme.label("오늘도, 가볍게 이야기해요.", 12, false);
     private final JLabel status = Theme.label("닉네임을 입력하고 데모 또는 서버 연결을 선택하세요.", 12, false);
@@ -178,8 +186,27 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
             public void changedUpdate(javax.swing.event.DocumentEvent event) { saveDraft(); }
         });
         newMessages.addActionListener(event -> transcript.jumpToLatest());
+        plannerToggle.addActionListener(event -> showPlanner());
+        chatToggle.addActionListener(event -> showChat());
+        plansTool.addActionListener(event -> showPlanner());
+        transcript.setTaskHandler((from, body) -> {
+            if(currentRoom==null || pending!=null) return;
+            membersPanel.setVisible(false); gameView.setVisible(false); hideComposerTools();
+            roomContentCards.show(roomContent,"planner"); conversationNavigation.setVisible(false); membersToggle.setVisible(false); planner.focusClose(); updateMembers();
+            planner.fromMessage(from,body);
+        });
         updateButtons();
     }
+
+    private boolean plannerRequest(Message message) {
+        if(!connected || currentRoom==null || pending!=null) return false;
+        request(message,"planner"); return true;
+    }
+    private void showPlanner() {
+        membersPanel.setVisible(false); gameView.setVisible(false); hideComposerTools();
+        roomContentCards.show(roomContent,"planner"); conversationNavigation.setVisible(false); membersToggle.setVisible(false); planner.focusClose(); updateMembers(); planner.open();
+    }
+    private void showChat() { roomContentCards.show(roomContent,"chat"); conversationNavigation.setVisible(true); membersToggle.setVisible(true); messageInput.requestFocusInWindow(); }
 
     private void gameResultRevealed(String summary) { transcript.addNotice(summary); }
 
@@ -307,20 +334,25 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         JPanel actions = Theme.panel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
         membersToggle.setBorder(new EmptyBorder(10, 12, 10, 12)); leave.setBorder(new EmptyBorder(10, 12, 10, 12));
         actions.add(membersToggle); actions.add(leave); heading.add(actions, BorderLayout.EAST);
+        JPanel navigation=conversationNavigation;
+        chatToggle.setBorder(new EmptyBorder(6,10,6,10)); plannerToggle.setBorder(new EmptyBorder(6,10,6,10));
+        navigation.add(chatToggle); navigation.add(plannerToggle);
+        navigation.setBorder(new EmptyBorder(8,0,0,0)); heading.add(navigation,BorderLayout.SOUTH);
         JPanel chatHeader = Theme.panel(new BorderLayout());
         chatHeader.add(heading, BorderLayout.NORTH); chatHeader.add(gameView, BorderLayout.CENTER);
         conversation.add(chatHeader, BorderLayout.NORTH);
         JScrollPane messages = new JScrollPane(transcript); messages.setBorder(null);
         messages.setName("messageScroll");
         messages.getViewport().setBackground(Theme.CHAT); messages.getVerticalScrollBar().setUnitIncrement(24);
-        conversation.add(messages, BorderLayout.CENTER);
+        JPanel chatContent=Theme.panel(new BorderLayout());
+        chatContent.add(messages, BorderLayout.CENTER);
         JPanel composerWrap = Theme.panel(new BorderLayout()); composerWrap.setBorder(new EmptyBorder(10, 18, 18, 18));
         JPanel composer = Theme.rounded(new BorderLayout(10, 0), Color.WHITE, 24);
         composer.setBorder(new EmptyBorder(10, 10, 10, 10));
         messageInput.putClientProperty("placeholder", "메시지를 입력하세요");
         messageInput.setToolTipText("메시지 1~1000자 · Enter로 보내기");
         JPanel inputActions=Theme.panel(new FlowLayout(FlowLayout.LEFT,4,0));
-        toolsToggle.setToolTipText("게임과 귓속말 열기");
+        toolsToggle.setToolTipText("게임·귓속말·우리의 계획 열기");
         toolsToggle.getAccessibleContext().setAccessibleName("대화 도구 열기");
         toolsToggle.setFont(new Font("SansSerif",Font.PLAIN,22));
         toolsToggle.setBorder(new EmptyBorder(5,12,5,12));
@@ -339,14 +371,16 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         composerWrap.add(composer, BorderLayout.CENTER);
         JPanel extras = Theme.panel(new BorderLayout());
         composerTools.setName("composerTools"); composerTools.setBorder(new EmptyBorder(10,0,4,0));
-        game.setIcon(new GameHandIcon("ROCK",28)); composerTools.add(game); composerTools.add(whisper);
+        game.setIcon(new GameHandIcon("ROCK",28)); composerTools.add(game); composerTools.add(whisper); composerTools.add(plansTool);
         composerTools.setVisible(false);
         extras.add(composerTools, BorderLayout.NORTH);
         JPanel drawers=Theme.panel(new BorderLayout());
         drawers.add(emoticonPicker, BorderLayout.NORTH); drawers.add(whisperComposer, BorderLayout.CENTER);
         extras.add(drawers, BorderLayout.CENTER);
         composerWrap.add(extras, BorderLayout.SOUTH);
-        conversation.add(composerWrap, BorderLayout.SOUTH);
+        chatContent.add(composerWrap, BorderLayout.SOUTH);
+        roomContent.add(chatContent,"chat"); roomContent.add(planner,"planner");
+        conversation.add(roomContent,BorderLayout.CENTER);
         panel.add(conversation, BorderLayout.CENTER);
         JPanel side = membersPanel; side.setName("membersPanel"); side.setBackground(new Color(0xF6F5F1));
         side.setBorder(new EmptyBorder(24, 18, 20, 18)); side.setPreferredSize(new Dimension(170, 0));
@@ -503,6 +537,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
                 case "ROOM_JOINED" -> {
                     message.requireFields(2);
                     currentRoom = message.field(0); roomTitle.setText(message.field(1));
+                    planner.enter(currentRoom,self); showChat();
                     whisperComposer.clear(); gameView.clearRoom(); emoticonPicker.setVisible(false); hideComposerTools();
                     transcript.clear(); userModel.clear(); userTitle.setText("함께 대화 중");
                     String draft = drafts.getOrDefault(currentRoom, "");
@@ -519,6 +554,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
                 }
                 case "ROOM_LEFT" -> {
                     message.requireFields(0); saveDraft(); currentRoom = null; roomList.repaint();
+                    planner.enter(null,self); showChat();
                     whisperComposer.clear(); gameView.clearRoom(); emoticonPicker.setVisible(false); hideComposerTools();
                     userModel.clear(); transcript.clear(); messageInput.setText("");
                     conversationCards.show(conversationPages, "empty"); finish("leave"); info("로비로 돌아왔습니다.", false);
@@ -532,6 +568,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
                         userModel.clear();
                         message.fields().subList(1, message.fields().size()).forEach(userModel::addElement);
                         whisperComposer.updateTargets(Collections.list(userModel.elements()), self);
+                        planner.updateMembers(Collections.list(userModel.elements()));
                         gameView.membersChanged(Collections.list(userModel.elements()));
                         updateMembers();
                     }
@@ -542,7 +579,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
                         recentMessages.put(currentRoom, (message.field(1).equals(self) ? "나" : message.field(1))+": "+message.field(2));
                         recentTimes.put(currentRoom, java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")));
                         recentActivity.put(currentRoom, ++activitySequence); filterRooms();
-                        transcript.addMessage(message.field(1), message.field(2), message.field(1).equals(self));
+                        transcript.addTaskMessage(message.field(1), message.field(2), message.field(1).equals(self));
                         if (message.field(1).equals(self)) {
                             if (messageInput.getText().strip().equals(message.field(2))) messageInput.setText("");
                             finish("chat"); info("메시지를 전송했습니다.", false);
@@ -616,11 +653,22 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
                     if (Objects.equals(currentRoom, message.field(0))) transcript.addNotice(message.field(1));
                 }
                 case "ERROR" -> {
-                    message.requireFields(2); gameView.choiceRejected(); timeout.stop(); pending = null; afterLeave = null;
+                    if(message.fields().size()!=2 && message.fields().size()!=3) throw new IOException("ERROR 필드 수 오류");
+                    if(planner.waiting()) {
+                        if(planner.error(message)) finish("planner");
+                        break;
+                    }
+                    // 신규 기능의 늦은 오류는 기존 채팅/게임 대기를 해제하지 않는다.
+                    if(message.fields().size()==3) break;
+                    gameView.choiceRejected(); timeout.stop(); pending = null; afterLeave = null;
                     pendingWhisperTarget = null; pendingWhisperBody = null; pendingGame = null; pendingEmoticon = null;
                     info(message.field(1) + " (" + message.field(0) + ")", true);
                 }
-                default -> info("미지원 서버 메시지: " + message.type(), true);
+                default -> {
+                    if(chatapp.client.planner.PlannerState.supports(message.type())) {
+                        if(planner.receive(message)) finish("planner");
+                    } else info("미지원 서버 메시지: " + message.type(), true);
+                }
             }
             updateButtons();
         } catch (IOException | RuntimeException e) {
@@ -648,10 +696,13 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         game.setEnabled(connected && currentRoom != null); emoticons.setEnabled(ready && currentRoom != null);
         gameView.setReady(ready && currentRoom != null, self, userModel.size());
         emoticonPicker.setReady(ready && currentRoom != null);
+        plannerToggle.setEnabled(connected && currentRoom!=null); chatToggle.setEnabled(connected && currentRoom!=null);
+        plansTool.setEnabled(connected && currentRoom!=null);
+        planner.setReady(ready && currentRoom!=null);
     }
     private void connectionLost(String reason) { reset(); info(reason, true); }
     private void reset() {
-        session++; timeout.stop();
+        session++; timeout.stop(); planner.enter(null,null); showChat();
         hideComposerTools(); gameView.reset(); emoticonPicker.reset(); rewardedGames.clear(); pendingGame = null; pendingEmoticon = null;
         emoticons.setText("이모티콘");
         whisperComposer.clear(); pendingWhisperTarget = null; pendingWhisperBody = null;
