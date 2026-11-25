@@ -7,12 +7,13 @@ import java.util.concurrent.*;
 
 /** UI 체험용 로컬 데이터. 가상 참가자와 정해진 결과를 사용하며 실제 서버 통신·영구 저장은 하지 않는다. */
 public final class DemoTransport implements ChatTransport {
+    private final DemoReplies replies = new DemoReplies();
     private final DemoPlanner planner = new DemoPlanner();
     private final Map<String, String> rooms = new LinkedHashMap<>();
     private Listener listener;
     private String nickname;
     private String currentRoom;
-    private int nextId = 3;
+    private int nextId = 5;
     private boolean closed;
     private String peer1, peer2, gameId;
     private int round;
@@ -32,6 +33,8 @@ public final class DemoTransport implements ChatTransport {
         planner.seed(nickname,peer1);
         rooms.put("1", "우리들의 아지트");
         rooms.put("2", "오늘 뭐 먹지?");
+        rooms.put("3", "주말 산책");
+        rooms.put("4", "과제 같이 할 사람");
         emit(Message.of("WELCOME", nickname));
         roomList();
     }
@@ -62,8 +65,9 @@ public final class DemoTransport implements ChatTransport {
                 if (currentRoom == null) { error("NOT_IN_ROOM", "먼저 방에 입장해 주세요."); break; }
                 String body = message.field(0).strip();
                 if (body.isEmpty() || body.length() > 1000) { error("INVALID_MESSAGE", "메시지는 1~1000자로 입력해 주세요."); break; }
-                emit(Message.of("CHAT_MESSAGE", currentRoom, nickname, body));
+                emit(replies.chat(currentRoom, nickname, body));
             }
+            case "CHAT_REPLY_SEND" -> emit(replies.reply(message, currentRoom, nickname));
             case "GAME_START" -> {
                 message.requireFields(0);
                 if (!"1".equals(currentRoom)) { error("NOT_ENOUGH_PLAYERS", "우리들의 아지트에서 가상 친구와 체험해 보세요."); break; }
@@ -123,6 +127,9 @@ public final class DemoTransport implements ChatTransport {
         emit(Message.of("ROOM_JOINED", id, rooms.get(id)));
         emit("1".equals(id) ? Message.of("ROOM_USERS",id,nickname,peer1,peer2) : Message.of("ROOM_USERS", id, nickname));
         emit(Message.of("SYSTEM", id, "1".equals(id) ? "가상 친구와 게임·이모티콘·귓속말을 체험해 보세요. 게임 결과는 체험용 순서로 표시돼요." : "데모 방입니다. 메시지는 이 컴퓨터의 화면에만 표시됩니다."));
+        if ("1".equals(id)) {
+            emit(replies.chat(id, peer1, "오늘 저녁에 몇 시쯤 만날까?"));
+        }
         roomList();
     }
     private void roomList() {
