@@ -203,7 +203,8 @@ public final class Week3Checks {
             check(visible(p,"plannerCreatePage") && visible(p,"plannerAddTodo") && visible(p,"plannerAddSchedule"),"추가할 때만 할 일·약속 종류 선택");
             snapshot(p,"week3-plan-add",960,680); click(p,"plannerAddTodo");
             check(visible(p,"plannerSourceGuide"),"할 일 선택은 원문 메시지 선택 방법 안내"); click(p,"plannerPickMessage"); check(visible(p,"transcript"),"원문 선택을 위해 대화로 복귀");
-            click(p,"plannerToggle"); await(()->enabled(p,"plannerRefresh"),"원문 안내 뒤 계획 다시 열기"); click(p,"plannerGuideBack");
+            click(p,"plannerToggle"); await(()->enabled(p,"plannerRefresh"),"원문 안내 뒤 계획 다시 열기");
+            check(visible(p,"plannerListPage") && !visible(p,"plannerSourceGuide"),"안내만 보고 닫으면 다시 열 때 목록부터 표시");
             click(p,"plannerNew"); click(p,"plannerAddSchedule"); set(p,"plannerTitle","주말에 같이 산책하기"); set(p,"plannerDate","2026-11-22"); set(p,"plannerTime","14:30"); set(p,"plannerMemo","공원 입구에서 만나요.\n비가 오면 카페로 가요.");
             click(p,"plannerClose"); check(visible(p,"transcript"),"약속 작성 중에도 바로 닫기 가능");
             click(p,"plannerToggle"); await(()->enabled(p,"plannerSave"),"작성하던 약속으로 다시 열기");

@@ -198,7 +198,7 @@ public final class PlannerPanel extends JPanel {
         guideWords.add(Theme.label("대화에서 할 일을 가져와요",20,true));
         guideWords.add(Theme.label("채팅 메시지를 우클릭하고 ‘할 일로 만들기’를 선택하세요.",13,false));
         guideWords.add(Theme.label("원문을 함께 보관해 무엇을 부탁했는지 다시 볼 수 있어요.",12,false));
-        JButton pickMessage=button("plannerPickMessage","대화에서 선택",true); pickMessage.addActionListener(e->returnToChat.run()); guideWords.add(pickMessage);
+        JButton pickMessage=button("plannerPickMessage","대화에서 선택",true); pickMessage.addActionListener(e->leave()); guideWords.add(pickMessage);
         JPanel guideCenter=Theme.panel(new GridBagLayout()); guideCenter.add(guideWords); guide.add(guideCenter,BorderLayout.CENTER); content.add(guide,"sourceGuide");
         addTodo.addActionListener(e->{ showingForm=false; contentCards.show(content,"sourceGuide"); });
         addSchedule.addActionListener(e->{ kind="SCHEDULE"; newForm(); showForm(); }); add(content,BorderLayout.CENTER);
@@ -206,9 +206,9 @@ public final class PlannerPanel extends JPanel {
         feedbackScroll.setName("plannerFeedbackScroll"); feedbackScroll.setBorder(BorderFactory.createLineBorder(Theme.BORDER));
         feedbackScroll.getViewport().setBackground(Theme.BACKGROUND); feedbackScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         feedbackScroll.getVerticalScrollBar().setUnitIncrement(18); feedbackScroll.setVisible(false); feedback.setVisible(false); add(feedbackScroll,BorderLayout.SOUTH);
-        close.addActionListener(e -> returnToChat.run());
+        close.addActionListener(e -> leave());
         getInputMap(WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ESCAPE,0),"closePlanner");
-        getActionMap().put("closePlanner",new AbstractAction(){ public void actionPerformed(java.awt.event.ActionEvent e){ returnToChat.run(); }});
+        getActionMap().put("closePlanner",new AbstractAction(){ public void actionPerformed(java.awt.event.ActionEvent e){ leave(); }});
         back.addActionListener(e -> { PlanKey previous=editKey(); if(!dirty && pending==null) newForm(); showList(); focusRow(previous); });
         resume.addActionListener(e -> showForm());
         sourceToggle.addActionListener(e -> { sourceRow.setVisible(!sourceRow.isVisible()); sourceToggle.setText(sourceRow.isVisible()?"원문 접기 ▴":"원문 보기 ▾"); revalidate(); repaint(); });
@@ -306,6 +306,10 @@ public final class PlannerPanel extends JPanel {
     }
     private void showForm() {
         showingForm=true; contentCards.show(content,"form"); revalidate(); repaint();
+    }
+    private void leave() {
+        if(!showingForm) showList();
+        returnToChat.run();
     }
     public void focusClose() { close.requestFocusInWindow(); }
     private void changed() { if(!updating) { dirty=true; deleteArmed=false; buttons(); } }
