@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -47,10 +48,25 @@ final class Hub {
         Game game;
         final Map<String, Todo> todos = new LinkedHashMap<>();
         final Map<String, Schedule> schedules = new LinkedHashMap<>();
+        /** 답장 대상 조회용 최근 일반 채팅·답장 사본(합계 최근 RECENT_MESSAGE_LIMIT개). */
+        final LinkedHashMap<String, ChatRecord> recentMessages = new LinkedHashMap<>();
 
         Room(String id, String name) {
             this.id = id;
             this.name = name;
+        }
+    }
+
+    /** 답장 대상 조회용 채팅 사본. 원문이 지워지는 일 없이 생성 시점 그대로 보관한다. */
+    static final class ChatRecord {
+        final String sender;
+        final String text;
+        final boolean reply;
+
+        ChatRecord(String sender, String text, boolean reply) {
+            this.sender = sender;
+            this.text = text;
+            this.reply = reply;
         }
     }
 
@@ -144,6 +160,9 @@ final class Hub {
     private int nextGameNumber = 1;
     private int nextTodoNumber = 1;
     private int nextScheduleNumber = 1;
+    /** 방별 최근 메시지·연결별 최근 답장 성공 요청 보관 한도(4주차 합의). */
+    private static final int RECENT_MESSAGE_LIMIT = 200;
+    private static final int REPLY_REQUEST_LIMIT = 200;
 
     Hub() {
         this(30_000, new Random());
@@ -191,6 +210,21 @@ final class Hub {
         if (time.isEmpty()) return true;
         if (!time.matches("\\d{2}:\\d{2}")) return false;
         try { LocalTime.parse(time); return true; } catch (DateTimeException e) { return false; }
+    }
+
+    /** 표준 형식(소문자, 하이픈 포함)의 UUID 문자열인지 확인한다. */
+    private static boolean validUuid(String value) {
+        if (value == null) return false;
+        try {
+            return UUID.fromString(value).toString().equalsIgnoreCase(value);
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
+    }
+
+    /** 가장 오래전에 넣은 항목부터 지워 한도를 맞춘다(LinkedHashMap의 삽입 순서를 이용). */
+    private static void trimToLimit(LinkedHashMap<String, ?> entries, int limit) {
+        while (entries.size() > limit) entries.remove(entries.keySet().iterator().next());
     }
 
     private static void error(Session s, String code, String description) {
@@ -318,8 +352,73 @@ final class Hub {
             error(s, "INVALID_MESSAGE", "메시지는 제어문자 없이 1~1000자로 입력해 주세요");
             return;
         }
-        Message message = Message.of("CHAT_MESSAGE", s.room.id, s.nickname, text);
+        String messageId = UUID.randomUUID().toString();
+        s.room.recentMessages.put(messageId, new ChatRecord(s.nickname, text, false));
+        trimToLimit(s.room.recentMessages, RECENT_MESSAGE_LIMIT);
+        Message message = Message.of("CHAT_MESSAGE", s.room.id, s.nickname, text, messageId);
         for (Session member : s.room.members) member.send(message); // 보낸 사람 포함
+    }
+
+    /**
+     * 같은 방의 일반 텍스트 메시지에만 답장할 수 있다(귓속말·시스템·이모티콘·답장에 또 답장은 제외).
+     * 원문 작성자·내용은 클라이언트가 보내지 않고, 방에 보관된 사본에서 서버가 채워 보낸다.
+     */
+    synchronized void chatReply(Session s, List<String> requestFields, String requestId, String roomId,
+            String replyToMessageId, String rawText) {
+        if (requestFields.size() != 4 || !validUuid(requestId)) {
+            error3(s, "INVALID_REPLY", "답장 요청의 필드 수나 요청 번호 형식을 확인해 주세요", requestId);
+            return;
+        }
+        if (replayReplyIfDuplicate(s, requestId, requestFields)) return;
+        if (s.room == null || !s.room.id.equals(roomId)) {
+            error3(s, "NOT_IN_ROOM", "방에 입장해 있지 않습니다", requestId);
+            return;
+        }
+        if (!validUuid(replyToMessageId)) {
+            error3(s, "INVALID_REPLY", "원문 번호 형식을 확인해 주세요", requestId);
+            return;
+        }
+        String text = clean(rawText, 1000);
+        if (text == null) {
+            error3(s, "INVALID_MESSAGE", "메시지는 제어문자 없이 1~1000자로 입력해 주세요", requestId);
+            return;
+        }
+        ChatRecord source = s.room.recentMessages.get(replyToMessageId);
+        if (source == null) {
+            error3(s, "REPLY_TARGET_NOT_FOUND", "원문을 찾을 수 없습니다", requestId);
+            return;
+        }
+        if (source.reply) {
+            error3(s, "INVALID_REPLY_TARGET", "일반 메시지에만 답장할 수 있습니다", requestId);
+            return;
+        }
+        String messageId = UUID.randomUUID().toString();
+        s.room.recentMessages.put(messageId, new ChatRecord(s.nickname, text, true));
+        trimToLimit(s.room.recentMessages, RECENT_MESSAGE_LIMIT);
+        Message reply = Message.of("CHAT_REPLY_MESSAGE", s.room.id, requestId, messageId, s.nickname, text,
+                replyToMessageId, source.sender, source.text);
+        for (Session member : s.room.members) member.send(reply); // 보낸 사람 포함
+        rememberReply(s, requestId, requestFields, s.room.id, reply);
+    }
+
+    private boolean replayReplyIfDuplicate(Session s, String requestId, List<String> requestFields) {
+        RequestRecord record = s.replyRequests.get(requestId);
+        if (record == null) return false;
+        if (!record.type.equals("CHAT_REPLY_SEND") || !record.requestFields.equals(requestFields)) {
+            error3(s, "INVALID_REPLY", "같은 요청 번호를 다른 내용으로 다시 보냈습니다", requestId);
+            return true;
+        }
+        if (s.room != null && s.room.id.equals(record.roomId)) {
+            s.send(record.response);
+        } else {
+            error3(s, "NOT_IN_ROOM", "그 사이 방을 벗어나 이전 요청을 다시 처리할 수 없습니다", requestId);
+        }
+        return true;
+    }
+
+    private void rememberReply(Session s, String requestId, List<String> requestFields, String roomId, Message response) {
+        s.replyRequests.put(requestId, new RequestRecord("CHAT_REPLY_SEND", requestFields, roomId, response));
+        trimToLimit(s.replyRequests, REPLY_REQUEST_LIMIT);
     }
 
     // ---- 가위바위보 ----

@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
@@ -43,6 +44,8 @@ final class Session implements Runnable {
     Hub.Room room;
     /** 할 일·일정 변경 요청의 requestId 중복 처리 기록. 연결이 끝나면(= 새 Session) 함께 사라진다. */
     final Map<String, Hub.RequestRecord> plannerRequests = new HashMap<>();
+    /** 답장 성공 요청의 requestId 중복 처리 기록. 최근 REPLY_REQUEST_LIMIT건만 보관(Hub가 정리). */
+    final LinkedHashMap<String, Hub.RequestRecord> replyRequests = new LinkedHashMap<>();
 
     Session(Socket socket, Hub hub) throws IOException {
         this.socket = socket;
@@ -146,6 +149,8 @@ final class Session implements Runnable {
             case "ROOM_JOIN" -> hub.joinRoom(this, arg(message, 0));
             case "ROOM_LEAVE" -> hub.leaveRoom(this);
             case "CHAT_SEND" -> hub.chat(this, arg(message, 0));
+            case "CHAT_REPLY_SEND" -> hub.chatReply(this, message.fields(), arg(message, 0), arg(message, 1),
+                    arg(message, 2), arg(message, 3));
             case "GAME_START" -> hub.gameStart(this);
             case "GAME_CHOOSE" -> hub.gameChoose(this, arg(message, 0), arg(message, 1));
             case "EMOTICON_LIST" -> hub.emoticonList(this);
