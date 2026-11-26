@@ -450,14 +450,12 @@ public final class Week3Checks {
     }
     static void clickRoomMenu(ChatPanel p, String label) throws Exception {
         edt(() -> {
-            JMenu menu = (JMenu)find(p, "roomMenu");
+            JButton menu = (JButton)find(p, "roomMenu");
             if (!menu.isEnabled()) throw new AssertionError("방 메뉴 비활성");
-            menu.doClick();
             JMenuItem item = null;
-            for (Component entry : menu.getMenuComponents())
+            for (Component entry : menu.getComponentPopupMenu().getComponents())
                 if (entry instanceof JMenuItem action && label.equals(action.getText())) item = action;
             if (item == null || !item.isEnabled()) throw new AssertionError(label);
-            MenuSelectionManager.defaultManager().clearSelectedPath();
             item.doClick();
             return null;
         });

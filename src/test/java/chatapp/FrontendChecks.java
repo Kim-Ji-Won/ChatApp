@@ -135,14 +135,13 @@ public final class FrontendChecks {
             check(!textArea(panel).contains("접속·로비·채팅 화면"), "이전 방 대화 격리");
             click(panel, "backToRooms");
             edt(() -> {
-                JMenu menu = (JMenu)find(panel, "lobbyMenu");
+                JButton menu = (JButton)find(panel, "lobbyMenu");
                 check(active(menu) && !active(find(panel, "disconnect")), "목록 상단에 계정 메뉴만 표시");
-                menu.doClick();
-                check(menu.getMenuComponent(0) instanceof JLabel account
+                JPopupMenu popup = menu.getComponentPopupMenu();
+                check(popup.getComponent(0) instanceof JLabel account
                         && account.getText().equals("김지원 · 데모"), "목록 메뉴의 닉네임과 접속 상태");
-                JMenuItem endSession = menu.getItem(menu.getItemCount() - 1);
+                JMenuItem endSession = (JMenuItem)popup.getComponent(popup.getComponentCount() - 1);
                 check("연결 종료".equals(endSession.getText()), "목록 메뉴에서 연결 종료");
-                MenuSelectionManager.defaultManager().clearSelectedPath();
                 endSession.doClick();
                 return null;
             });
@@ -571,7 +570,7 @@ public final class FrontendChecks {
             click(panel,"closeWhisper"); click(panel,"startGame");
             await(() -> enabled(panel,"chooseROCK"),"데모 다음 판 시작");
             click(panel,"chooseROCK");
-            await(() -> ui(() -> find(((JMenu)find(panel,"roomMenu")).getPopupMenu(),"leave").isEnabled()),"선택 응답 이후 퇴장 가능");
+            await(() -> ui(() -> find(((JButton)find(panel,"roomMenu")).getComponentPopupMenu(),"leave").isEnabled()),"선택 응답 이후 퇴장 가능");
             Week3Checks.leaveViaMenu(panel);
             await(() -> status(panel).contains("로비로"),"가상 응답 대기 중 퇴장");
             selectRoom(panel,"오늘 뭐 먹지?"); openSelected(panel);

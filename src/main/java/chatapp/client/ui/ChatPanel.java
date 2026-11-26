@@ -61,7 +61,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
     private final JButton disconnect = namedButton("disconnect", "연결 종료", false);
     private final JButton create = namedButton("create", "방 만들기", true);
     private final JButton refresh = namedButton("refresh", "새로고침", false);
-    private final JMenu roomMenu = new MoreMenu();
+    private final JButton roomMenu = new MoreMenu();
     private final JMenuItem leave = new JMenuItem("방 나가기");
     private final JButton backToRooms = namedButton("backToRooms", "‹", false);
     private final JButton send = namedButton("send", "보내기", true);
@@ -259,12 +259,12 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         actions.add(connect); actions.add(demo); form.add(actions, BorderLayout.SOUTH);
         pair.add(form); outer.add(pair); return outer;
     }
-    private static final class MoreMenu extends JMenu {
+    private static final class MoreMenu extends JButton {
         @Override protected void paintComponent(Graphics graphics) {
             Graphics2D g = (Graphics2D) graphics.create();
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             int cx = getWidth() / 2, cy = getHeight() / 2;
-            if (isSelected() || getModel().isRollover() || hasFocus()) {
+            if (getModel().isPressed() || getModel().isRollover() || hasFocus()) {
                 g.setColor(new Color(0, 0, 0, 18));
                 g.fillOval(cx - 15, cy - 15, 30, 30);
             }
@@ -275,31 +275,36 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         }
     }
 
-    private JMenuBar accountMenu(JMenu menu, String name, String label, JLabel accountLabel, JMenuItem roomAction) {
-        menu.setName(name);
-        menu.setToolTipText(label);
-        menu.getAccessibleContext().setAccessibleName(label);
-        menu.setPreferredSize(new Dimension(34, 32));
-        menu.setOpaque(false);
-        menu.setRolloverEnabled(true);
-        menu.setBorderPainted(false);
-        menu.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+    private JButton accountMenu(JButton button, String name, String label, JLabel accountLabel, JMenuItem roomAction) {
+        button.setName(name);
+        button.setToolTipText(label);
+        button.getAccessibleContext().setAccessibleName(label);
+        button.setPreferredSize(new Dimension(34, 32));
+        button.setContentAreaFilled(false);
+        button.setOpaque(false);
+        button.setRolloverEnabled(true);
+        button.setBorderPainted(false);
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+
+        JPopupMenu popup = new JPopupMenu();
         accountLabel.setBorder(new EmptyBorder(6, 12, 6, 12));
         accountLabel.setForeground(Theme.MUTED);
-        menu.add(accountLabel);
-        menu.addSeparator();
-        if (roomAction != null) menu.add(roomAction);
+        popup.add(accountLabel);
+        popup.addSeparator();
+        if (roomAction != null) popup.add(roomAction);
         JMenuItem endSession = new JMenuItem("연결 종료");
         endSession.addActionListener(event -> disconnectSession());
-        menu.add(endSession);
-        JMenuBar menuBar = new JMenuBar();
-        // The native macOS menu bar paints a window-style strip even inside a chat header.
-        menuBar.setUI(new javax.swing.plaf.basic.BasicMenuBarUI());
-        menuBar.setOpaque(false);
-        menuBar.setBorder(BorderFactory.createEmptyBorder());
-        menuBar.setBorderPainted(false);
-        menuBar.add(menu);
-        return menuBar;
+        popup.add(endSession);
+
+        button.setComponentPopupMenu(popup);
+        button.addActionListener(event -> popup.show(button,
+                button.getWidth() - popup.getPreferredSize().width, button.getHeight()));
+        button.addHierarchyListener(event -> {
+            if ((event.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0 && !button.isShowing()) {
+                popup.setVisible(false);
+            }
+        });
+        return button;
     }
 
     private JPanel lobbyPage() {
