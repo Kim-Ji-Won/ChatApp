@@ -181,7 +181,7 @@ public final class Week3Checks {
     private static void demoUiChecks() throws Exception {
         ChatPanel p=edt(()->{Theme.install(); return new ChatPanel();});
         try {
-            set(p,"nickname","김지원"); click(p,"demo"); await(()->size(p,"roomList")==2,"3주차 데모 연결");
+            set(p,"nickname","김지원"); click(p,"demo"); await(()->size(p,"roomList")==4,"3주차 데모 연결");
             openRoom(p,0); await(()->enabled(p,"send"),"데모 방 입장"); click(p,"plannerToggle");
             await(()->size(p,"plannerList")==2 && enabled(p,"plannerRefresh"),"할 일·약속을 한 목록에 함께 조회");
             check(visible(p,"plannerListPage") && !visible(p,"plannerFormPage"),"처음에는 통합 목록만 표시");
@@ -221,7 +221,7 @@ public final class Week3Checks {
             await(()->ui(()->planner(p).state().schedule(added).title().equals("주말 산책과 커피")),"약속 수정");
             selectPlan(p,"SCHEDULE",added); click(p,"plannerDelete"); check(size(p,"plannerList")==3,"삭제 첫 클릭은 확인만"); click(p,"plannerDelete");
             await(()->size(p,"plannerList")==2,"약속 삭제 후 다른 계획 유지");
-            click(p,"chatToggle"); set(p,"messageInput","내일 사진 정리 같이 해요"); click(p,"send"); await(()->enabled(p,"send"),"할 일 원문 채팅 전송");
+            click(p,"plannerClose"); set(p,"messageInput","내일 사진 정리 같이 해요"); click(p,"send"); await(()->enabled(p,"send"),"할 일 원문 채팅 전송");
             click(p,"plannerToggle"); await(()->enabled(p,"plannerRefresh"),"계획 화면 복귀");
             set(p,"plannerFilter","2026-11-22");
             edt(()->{planner(p).fromMessage("김지원","내일 사진 정리 같이 해요"); return null;}); await(()->enabled(p,"plannerSave"),"원문 사본으로 할 일 폼 생성");
@@ -233,7 +233,7 @@ public final class Week3Checks {
             String myTodo=ui(()->planner(p).state().todos().stream().filter(item->item.title().equals("내일 사진 정리 같이 해요")).findFirst().orElseThrow().id());
             selectPlan(p,"TODO",myTodo); snapshot(p,"week3-todos",1080,720); click(p,"plannerComplete"); await(()->ui(()->planner(p).state().todo(myTodo).done()),"작성자 완료 변경");
             selectPlan(p,"TODO",myTodo); click(p,"plannerComplete"); await(()->ui(()->!planner(p).state().todo(myTodo).done()),"완료 취소");
-            click(p,"leave"); await(()->enabled(p,"refresh"),"계획 화면에서 퇴장"); openRoom(p,0); await(()->enabled(p,"send"),"데모 재입장"); click(p,"plannerToggle");
+            leaveViaMenu(p); await(()->enabled(p,"refresh"),"계획 화면에서 퇴장"); openRoom(p,0); await(()->enabled(p,"send"),"데모 재입장"); click(p,"plannerToggle");
             await(()->size(p,"plannerList")==3 && enabled(p,"plannerRefresh"),"재입장 후 두 종류 계획 재조회");
         } finally { edt(()->{p.close(); return null;}); }
     }
@@ -298,7 +298,7 @@ public final class Week3Checks {
             check(peer.take().type().equals("SCHEDULE_LIST"),"첫 목록 성공 뒤 두 번째 목록 조회");
             peer.send(Message.of("ERROR","NOT_IN_ROOM","약속 조회 실패"));
             await(()->enabled(p,"plannerRefresh") && text(p,"plannerFeedback").contains("모두 불러오지 못했어요"),"두 번째 목록 실패도 대기 해제와 부분 조회 오류 안내");
-            click(p,"chatToggle"); set(p,"messageInput","계속 채팅"); click(p,"send"); check(peer.take().type().equals("CHAT_SEND"),"신규 오류 후 기존 채팅 사용 가능");
+            click(p,"plannerClose"); set(p,"messageInput","계속 채팅"); click(p,"send"); check(peer.take().type().equals("CHAT_SEND"),"신규 오류 후 기존 채팅 사용 가능");
             peer.send(Message.of("ERROR","INVALID_TODO","늦은 오류",invalid.field(0))); edt(()->null); check(!enabled(p,"send"),"늦은 3필드 오류가 채팅 대기를 지우지 않음");
             peer.send(Message.of("CHAT_MESSAGE","r1","지원","계속 채팅")); await(()->enabled(p,"send"),"기존 채팅 성공 처리 유지");
             click(p,"plannerToggle"); peer.take();
@@ -330,7 +330,7 @@ public final class Week3Checks {
             peer.send(Message.of("SCHEDULE_EDITED","r1",dateEdit.field(0),"s3","3","2026-11-23","약속 이름 수정","15:00","첫 줄\n둘째 줄","지원"));
             await(()->enabled(p,"plannerNew") && size(p,"plannerList")==4,"약속 날짜 변경 후 필터 해제와 전체 목록 복원");
             check(text(p,"plannerFilter").isEmpty() && selectedPlan(p).equals(new PlannerPanel.PlanKey("SCHEDULE","s3")),"수정으로 필터 밖으로 이동해도 항목 선택 유지");
-            click(p,"leave"); check(peer.take().type().equals("ROOM_LEAVE"),"계획 화면 퇴장 요청"); peer.send(Message.of("ROOM_LEFT")); await(()->enabled(p,"refresh"),"퇴장 응답 반영");
+            leaveViaMenu(p); check(peer.take().type().equals("ROOM_LEAVE"),"계획 화면 퇴장 요청"); peer.send(Message.of("ROOM_LEFT")); await(()->enabled(p,"refresh"),"퇴장 응답 반영");
             peer.send(Message.of("SCHEDULE_CREATED","r1",schedule.field(0),"s3","1","2026-11-21","과거 알림","15:00","","지원"));
             edt(()->null); check(ui(()->planner(p).state().schedules().isEmpty()) && text(p,"plannerFilter").isEmpty(),"퇴장 후 이전 방 이벤트와 날짜 필터 초기화");
         } finally { edt(()->{p.close();return null;}); }
@@ -426,7 +426,7 @@ public final class Week3Checks {
         List<String> f=new ArrayList<>(); if(!type.equals("TODO_ITEM")) f.addAll(List.of(room,request));
         f.addAll(List.of(id,rev,title,author,who,"","",done,"정윤","자료를 같이 확인해 주세요")); return new Message(type,f);
     }
-    private static class TestPeer implements AutoCloseable {
+    static class TestPeer implements AutoCloseable {
         final ServerSocket server; Socket socket; DataInputStream input; DataOutputStream output;
         TestPeer() throws IOException {server=new ServerSocket(0,10,InetAddress.getLoopbackAddress()); server.setSoTimeout(5000);}
         int port(){return server.getLocalPort();}
@@ -437,22 +437,37 @@ public final class Week3Checks {
         public void close() throws IOException {if(socket!=null)socket.close();server.close();}
     }
     private static PlannerPanel planner(ChatPanel p) {return (PlannerPanel)find(p,"plannerPanel");}
-    private static Component find(Container parent,String name) {for(Component c:parent.getComponents()){if(name.equals(c.getName()))return c;if(c instanceof Container child){Component f=find(child,name);if(f!=null)return f;}}return null;}
+    static Component find(Container parent,String name) {for(Component c:parent.getComponents()){if(name.equals(c.getName()))return c;if(c instanceof Container child){Component f=find(child,name);if(f!=null)return f;}}return null;}
     private static void layout(Container parent){parent.doLayout();for(Component c:parent.getComponents())if(c instanceof Container child)layout(child);}
-    private static void snapshot(ChatPanel p,String name,int width,int height) throws Exception {edt(()->{
+    static void snapshot(ChatPanel p,String name,int width,int height) throws Exception {edt(()->{
         p.setSize(width,height);for(int i=0;i<3;i++)layout(p);BufferedImage image=new BufferedImage(width,height,BufferedImage.TYPE_INT_RGB);Graphics2D g=image.createGraphics();p.printAll(g);g.dispose();
         Files.createDirectories(Path.of("build/screenshots"));ImageIO.write(image,"png",Path.of("build/screenshots/"+name+".png").toFile());return null;
     });}
-    private static void set(ChatPanel p,String name,String text)throws Exception{edt(()->{Component target=find(p,name); if(target instanceof PlannerDateFilter f)f.setValue(text); else ((JTextComponent)target).setText(text);return null;});}
-    private static String text(ChatPanel p,String name){return ui(()->{Component target=find(p,name);return target instanceof PlannerDateFilter f?f.getValue():((JTextComponent)target).getText();});}
-    private static void click(ChatPanel p,String name)throws Exception{edt(()->{((JButton)find(p,name)).doClick();return null;});}
+    static void set(ChatPanel p,String name,String text)throws Exception{edt(()->{Component target=find(p,name); if(target instanceof PlannerDateFilter f)f.setValue(text); else ((JTextComponent)target).setText(text);return null;});}
+    static String text(ChatPanel p,String name){return ui(()->{Component target=find(p,name);return target instanceof PlannerDateFilter f?f.getValue():((JTextComponent)target).getText();});}
+    static void leaveViaMenu(ChatPanel p) throws Exception {
+        clickRoomMenu(p, "방 나가기");
+    }
+    static void clickRoomMenu(ChatPanel p, String label) throws Exception {
+        edt(() -> {
+            JButton menu = (JButton)find(p, "roomMenu");
+            if (!menu.isEnabled()) throw new AssertionError("방 메뉴 비활성");
+            JMenuItem item = null;
+            for (Component entry : menu.getComponentPopupMenu().getComponents())
+                if (entry instanceof JMenuItem action && label.equals(action.getText())) item = action;
+            if (item == null || !item.isEnabled()) throw new AssertionError(label);
+            item.doClick();
+            return null;
+        });
+    }
+    static void click(ChatPanel p,String name)throws Exception{edt(()->{((JButton)find(p,name)).doClick();return null;});}
     private static void select(ChatPanel p,String name,int index)throws Exception{edt(()->{((JList<?>)find(p,name)).setSelectedIndex(index);return null;});}
-    private static int size(ChatPanel p,String name){return ui(()->((JList<?>)find(p,name)).getModel().getSize());}
-    private static boolean enabled(ChatPanel p,String name){return ui(()->find(p,name).isEnabled());}
-    private static boolean visible(ChatPanel p,String name){return ui(()->{for(Component c=find(p,name);c!=null;c=c.getParent())if(!c.isVisible())return false;return true;});}
-    private static void openRoom(ChatPanel p,int index)throws Exception{select(p,"roomList",index);edt(()->{((JList<?>)find(p,"roomList")).getActionMap().get("openRoom").actionPerformed(new ActionEvent(p,0,"openRoom"));return null;});}
-    private static <T>T ui(Callable<T> task){try{return edt(task);}catch(Exception e){throw new RuntimeException(e);}}
-    private static <T>T edt(Callable<T> task)throws Exception{if(SwingUtilities.isEventDispatchThread())return task.call();FutureTask<T> f=new FutureTask<>(task);SwingUtilities.invokeAndWait(f);return f.get();}
+    static int size(ChatPanel p,String name){return ui(()->((JList<?>)find(p,name)).getModel().getSize());}
+    static boolean enabled(ChatPanel p,String name){return ui(()->find(p,name).isEnabled());}
+    static boolean visible(ChatPanel p,String name){return ui(()->{for(Component c=find(p,name);c!=null;c=c.getParent())if(!c.isVisible())return false;return true;});}
+    static void openRoom(ChatPanel p,int index)throws Exception{select(p,"roomList",index);edt(()->{((JList<?>)find(p,"roomList")).getActionMap().get("openRoom").actionPerformed(new ActionEvent(p,0,"openRoom"));return null;});}
+    static <T>T ui(Callable<T> task){try{return edt(task);}catch(Exception e){throw new RuntimeException(e);}}
+    static <T>T edt(Callable<T> task)throws Exception{if(SwingUtilities.isEventDispatchThread())return task.call();FutureTask<T> f=new FutureTask<>(task);SwingUtilities.invokeAndWait(f);return f.get();}
     private static void await(BooleanSupplier condition,String name)throws Exception{long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);while(!condition.getAsBoolean()&&System.nanoTime()<end)Thread.sleep(15);check(condition.getAsBoolean(),name);}
     private static void check(boolean condition,String name){if(!condition)throw new AssertionError(name);checks++;System.out.println("PASS "+name);}
 }
