@@ -95,6 +95,11 @@ public final class ServerChecks {
         System.out.println("  OK  " + name);
     }
 
+    private static boolean isUuid(String value) {
+        try { return UUID.fromString(value).toString().equalsIgnoreCase(value); }
+        catch (IllegalArgumentException invalid) { return false; }
+    }
+
     public static void main(String[] args) throws Exception {
         ChatServer server = new ChatServer(0);
         Thread serverThread = new Thread(server::serve);
@@ -172,7 +177,8 @@ public final class ServerChecks {
         // 방별 채팅 분리(보낸 사람 포함)
         a.send("CHAT_SEND", "안녕하세요 😀");
         Message fromA = a.expect("CHAT_MESSAGE");
-        check(fromA.fields().equals(List.of(room1, "정윤", "안녕하세요 😀")), "보낸 사람 포함 수신(한글·이모지)");
+        check(fromA.fields().subList(0, 3).equals(List.of(room1, "정윤", "안녕하세요 😀")) && isUuid(fromA.field(3)),
+                "보낸 사람 포함 수신(한글·이모지, messageId는 UUID)");
         check(b.expect("CHAT_MESSAGE").fields().equals(fromA.fields()), "같은 방 수신");
         c.expectSilence();
         check(true, "다른 방에는 전달되지 않음");
@@ -245,6 +251,7 @@ public final class ServerChecks {
 
         slowClientCheck(port);
         whisperChecks(port);
+        chatReplyChecks(port);
         gameBasicChecks(port);
         gameThreePlayerChecks(port);
         gameLateJoinerChecks(port);
@@ -307,6 +314,99 @@ public final class ServerChecks {
         check(toB.fields().equals(toA.fields()), "귓속말 수신자 수신");
         c.expectSilence();
         check(true, "다른 방은 귓속말을 받지 않음");
+        a.close(); b.close(); c.close(); guest.close();
+    }
+
+    /** 4주차: 같은 방의 일반 텍스트 메시지에만 답장. 귓속말·시스템·이모티콘·답장에 또 답장은 제외. */
+    private static void chatReplyChecks(int port) throws Exception {
+        Client a = new Client(port); a.hello("답장-가");
+        a.send("ROOM_CREATE", "답장방");
+        String room = a.expect("ROOM_JOINED").field(0);
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+
+        Client b = new Client(port); b.hello("답장-나");
+        b.send("ROOM_JOIN", room);
+        b.expect("ROOM_JOINED"); b.expect("ROOM_USERS"); b.expect("SYSTEM"); b.expect("ROOMS");
+        a.expect("ROOM_USERS"); a.expect("SYSTEM"); a.expect("ROOMS");
+
+        Client c = new Client(port); c.hello("답장-다");
+        c.send("ROOM_CREATE", "다른방");
+        c.expect("ROOM_JOINED"); c.expect("ROOM_USERS"); c.expect("SYSTEM"); c.expect("ROOMS");
+        a.expect("ROOMS"); b.expect("ROOMS");
+
+        a.send("CHAT_SEND", "오늘 저녁에 몇 시쯤 만날까?");
+        Message original = a.expect("CHAT_MESSAGE");
+        b.expect("CHAT_MESSAGE");
+        String originalId = original.field(3);
+        check(isUuid(originalId), "일반 메시지 messageId는 UUID");
+
+        // 필드 개수·UUID 오류
+        a.send("CHAT_REPLY_SEND", uuid(), room, originalId);
+        a.expectError("INVALID_REPLY", "답장 요청 필드 개수 오류 거부");
+        a.send("CHAT_REPLY_SEND", "not-a-uuid", room, originalId, "8시 어때요?");
+        a.expectError("INVALID_REPLY", "requestId가 UUID 아니면 거부");
+        a.send("CHAT_REPLY_SEND", uuid(), room, "not-a-uuid", "8시 어때요?");
+        a.expectError("INVALID_REPLY", "원문 번호가 UUID 아니면 거부");
+
+        // 방 불일치·방 밖
+        Client guest = new Client(port); guest.hello("답장-게스트");
+        guest.send("CHAT_REPLY_SEND", uuid(), room, originalId, "저도 끼워줘요");
+        guest.expectError("NOT_IN_ROOM", "방 밖 답장 거부");
+        a.send("CHAT_REPLY_SEND", uuid(), "r999", originalId, "다른 방 번호");
+        a.expectError("NOT_IN_ROOM", "요청 방과 현재 방이 다르면 거부");
+
+        // 본문 검증
+        a.send("CHAT_REPLY_SEND", uuid(), room, originalId, "   ");
+        a.expectError("INVALID_MESSAGE", "빈 답장 본문 거부");
+
+        // 원문 없음
+        a.send("CHAT_REPLY_SEND", uuid(), room, uuid(), "없는 원문");
+        a.expectError("REPLY_TARGET_NOT_FOUND", "존재하지 않는 원문 거부");
+
+        // 성공: 보낸 사람 포함 방 전체 수신, 필드 순서 확인
+        String replyRequestId = uuid();
+        b.send("CHAT_REPLY_SEND", replyRequestId, room, originalId, "8시 어때요?");
+        Message replyToB = b.expect("CHAT_REPLY_MESSAGE");
+        Message replyToA = a.expect("CHAT_REPLY_MESSAGE");
+        check(replyToB.fields().equals(replyToA.fields()), "답장 발신자·수신자 동일 내용 수신");
+        String replyId = replyToB.field(2);
+        check(replyToB.fields().equals(List.of(room, replyRequestId, replyId, "답장-나", "8시 어때요?",
+                originalId, "답장-가", "오늘 저녁에 몇 시쯤 만날까?")), "답장 메시지 필드 순서");
+        check(isUuid(replyId), "답장 messageId도 UUID");
+        c.expectSilence();
+        check(true, "다른 방은 답장을 받지 않음");
+
+        // 답장에 다시 답장 금지
+        a.send("CHAT_REPLY_SEND", uuid(), room, replyId, "답장에 답장");
+        a.expectError("INVALID_REPLY_TARGET", "답장에 또 답장하는 것은 거부");
+
+        // requestId 중복 처리: 같은 내용 재전송은 재실행 없이 기존 응답만 재전송, 다른 내용은 거부
+        b.send("CHAT_REPLY_SEND", replyRequestId, room, originalId, "8시 어때요?");
+        Message replayed = b.expect("CHAT_REPLY_MESSAGE");
+        check(replayed.fields().equals(replyToB.fields()), "같은 requestId·내용 재전송은 기존 응답 재전송");
+        a.expectSilence();
+        check(true, "재전송은 방 전체에 다시 브로드캐스트하지 않음");
+        b.send("CHAT_REPLY_SEND", replyRequestId, room, originalId, "다른 내용");
+        b.expectError("INVALID_REPLY", "같은 requestId 다른 내용은 거부");
+
+        // requestId 누락 시 오류 마지막 필드는 빈 문자열
+        a.send("CHAT_REPLY_SEND", "", room, originalId, "번호 없이");
+        Message missingId = a.expect("ERROR");
+        check(missingId.field(0).equals("INVALID_REPLY") && missingId.field(2).equals(""),
+                "requestId 누락 시 빈 문자열로 응답");
+
+        // 빈 방에서도 원문이 유지되어 답장할 수 있다.
+        a.send("ROOM_LEAVE"); a.expect("ROOM_LEFT");
+        b.expect("SYSTEM"); b.expect("ROOM_USERS");
+        a.expect("ROOMS"); b.expect("ROOMS"); c.expect("ROOMS"); guest.expect("ROOMS");
+        b.send("ROOM_LEAVE"); b.expect("ROOM_LEFT");
+        a.expect("ROOMS"); b.expect("ROOMS"); c.expect("ROOMS"); guest.expect("ROOMS");
+        a.send("ROOM_JOIN", room);
+        a.expect("ROOM_JOINED"); a.expect("ROOM_USERS"); a.expect("SYSTEM");
+        a.expect("ROOMS"); b.expect("ROOMS"); c.expect("ROOMS"); guest.expect("ROOMS");
+        a.send("CHAT_REPLY_SEND", uuid(), room, originalId, "빈 방이었어도 답장 가능");
+        check(a.expect("CHAT_REPLY_MESSAGE").field(6).equals("답장-가"), "빈 방을 거쳐도 원문이 유지되어 답장 가능");
+
         a.close(); b.close(); c.close(); guest.close();
     }
 
