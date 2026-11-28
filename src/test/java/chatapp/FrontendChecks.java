@@ -43,7 +43,7 @@ public final class FrontendChecks {
             BufferedImage image = new BufferedImage(280, 88, BufferedImage.TYPE_INT_RGB);
             Graphics2D graphics = image.createGraphics();
             cell.paint(graphics); graphics.dispose();
-            if ((image.getRGB(140, 5) & 0xffffff) == 0xFFF6CE) result.add(room.toString());
+            if (image.getRGB(140, 5) == Theme.OPEN_ROOM.getRGB()) result.add(room.toString());
         }
         return result;
     }

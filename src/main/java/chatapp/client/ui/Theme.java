@@ -11,6 +11,7 @@ public final class Theme {
     public static final Color YELLOW = new Color(0xFFE36D);
     public static final Color CHAT = new Color(0xDDE9EC);
     public static final Color BORDER = new Color(0xECE9E2);
+    public static final Color OPEN_ROOM = new Color(0xFBF8EF);
     private Theme() { }
     public static void install() {
         Font font = new Font("SansSerif", Font.PLAIN, 14);
@@ -50,13 +51,29 @@ public final class Theme {
         return button;
     }
     public static JTextField field(String name, String initial) {
+        return field(name, initial, false);
+    }
+    public static JTextField searchField(String name) {
+        return field(name, "", true);
+    }
+    private static JTextField field(String name, String initial, boolean search) {
         JTextField field = new JTextField(initial) {
             @Override protected void paintComponent(Graphics graphics) {
                 Graphics2D g = (Graphics2D) graphics.create();
                 g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g.setColor(Color.WHITE); g.fillRoundRect(0, 0, getWidth(), getHeight(), 18, 18);
-                g.setColor(hasFocus() ? new Color(0xE0C45D) : BORDER);
-                g.drawRoundRect(0, 0, getWidth()-1, getHeight()-1, 18, 18);
+                g.setColor(search ? new Color(0xF6F5F2) : Color.WHITE);
+                g.fillRoundRect(0, 0, getWidth(), getHeight(), 18, 18);
+                if (!search || hasFocus()) {
+                    g.setColor(hasFocus() ? new Color(0xE0C45D) : BORDER);
+                    g.drawRoundRect(0, 0, getWidth()-1, getHeight()-1, 18, 18);
+                }
+                if (search) {
+                    int top = (getHeight() - 14) / 2;
+                    g.setColor(MUTED);
+                    g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                    g.drawOval(12, top, 9, 9);
+                    g.drawLine(20, top + 8, 25, top + 13);
+                }
                 g.dispose(); super.paintComponent(graphics);
                 if (getText().isEmpty() && getClientProperty("placeholder") instanceof String hint) {
                     g = (Graphics2D) graphics.create();
@@ -74,11 +91,19 @@ public final class Theme {
         JPanel panel = new JPanel(layout); panel.setOpaque(false); return panel;
     }
     public static JPanel rounded(LayoutManager layout, Color color, int radius) {
+        return rounded(layout, color, radius, null);
+    }
+    public static JPanel rounded(LayoutManager layout, Color color, int radius, Color outline) {
         JPanel panel = new JPanel(layout) {
             @Override protected void paintComponent(Graphics graphics) {
                 Graphics2D g = (Graphics2D) graphics.create();
                 g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g.setColor(color); g.fillRoundRect(0, 0, getWidth(), getHeight(), radius, radius); g.dispose();
+                g.setColor(color); g.fillRoundRect(0, 0, getWidth(), getHeight(), radius, radius);
+                if (outline != null) {
+                    g.setColor(outline);
+                    g.drawRoundRect(0, 0, getWidth()-1, getHeight()-1, radius, radius);
+                }
+                g.dispose();
                 super.paintComponent(graphics);
             }
         };
