@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import javax.swing.JButton;
+import javax.swing.JTextField;
 import static chatapp.Week3Checks.*;
 
 public final class ReplyChecks {
@@ -117,6 +118,10 @@ public final class ReplyChecks {
             edt(() -> { moveOver(view, 85, 45); return null; });
             snapshot(panel, "week4-reply-hover", 960, 680);
             selectFirstBubble(view);
+            set(panel, "messageInput", "　  ");
+            check(!enabled(panel, "send"), "인용을 선택해도 공백 본문은 전송 불가");
+            edt(() -> { ((JTextField)find(panel, "messageInput")).postActionEvent(); return null; });
+            check(peer.noRequest() && visible(panel, "replyPreview"), "공백 Enter는 요청 없이 인용 유지");
             set(panel, "messageInput", "좋아요");
             click(panel, "cancelReply");
             check(!visible(panel, "replyPreview") && text(panel, "messageInput").equals("좋아요"), "답장 취소 후 본문 유지");

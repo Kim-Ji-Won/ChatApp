@@ -43,7 +43,7 @@ public final class FrontendChecks {
             BufferedImage image = new BufferedImage(280, 88, BufferedImage.TYPE_INT_RGB);
             Graphics2D graphics = image.createGraphics();
             cell.paint(graphics); graphics.dispose();
-            if ((image.getRGB(140, 5) & 0xffffff) == 0xFFF6CE) result.add(room.toString());
+            if (image.getRGB(140, 5) == Theme.OPEN_ROOM.getRGB()) result.add(room.toString());
         }
         return result;
     }
@@ -86,11 +86,14 @@ public final class FrontendChecks {
             set(panel, "roomName", "1주차 프론트엔드 회의"); click(panel, "create");
             await(() -> label(panel, "roomTitle").equals("1주차 프론트엔드 회의"), "방 생성 후 입장");
             await(() -> listSize(panel, "users") == 1, "방 참가자 표시");
-            set(panel, "messageInput", " "); click(panel, "send");
-            check(status(panel).contains("1~1000"), "빈 메시지 거부");
-            set(panel, "messageInput", "접속·로비·채팅 화면 연결을 확인했어요."); click(panel, "send");
+            check(!enabled(panel, "send"), "빈 입력에서 보내기 비활성화");
+            set(panel, "messageInput", "　 ");
+            check(!enabled(panel, "send"), "공백만 입력하면 보내기 비활성화");
+            set(panel, "messageInput", "접속·로비·채팅 화면 연결을 확인했어요.");
+            check(enabled(panel, "send"), "본문을 입력하면 보내기 활성화");
+            edt(() -> { field(panel, "messageInput").postActionEvent(); return null; });
             await(() -> textArea(panel).contains("접속·로비·채팅 화면"), "데모 메시지 표시");
-            check(edt(() -> field(panel, "messageInput").getText()).isEmpty(), "서버 응답 후 입력 초기화");
+            check(edt(() -> field(panel, "messageInput").getText()).isEmpty() && !enabled(panel, "send"), "서버 응답 후 입력 초기화 및 보내기 비활성화");
             set(panel, "messageInput", "다음 단계는 정윤님과 프로토콜 검토입니다."); click(panel, "send");
             await(() -> textArea(panel).contains("프로토콜 검토"), "연속 메시지 전송");
             snapshot(panel, "03-chat.png");
@@ -496,9 +499,9 @@ public final class FrontendChecks {
                 check(Message.of("EMOTICON_SEND","E03").equals(requests.poll(5,TimeUnit.SECONDS)),"이모티콘 ID 전송");
                 Message.of("EMOTICON_MESSAGE","r1","정윤","E03").write(out);
                 await(() -> textArea(panel).contains("축하해요!"),"다른 사람의 이모티콘 수신");
-                check(!enabled(panel,"send"),"타인의 이모티콘으로 내 전송 대기 종료하지 않음");
+                check(!enabled(panel,"backToRooms"),"타인의 이모티콘으로 내 전송 대기 종료하지 않음");
                 Message.of("EMOTICON_MESSAGE","r1","김지원","E03").write(out);
-                await(() -> enabled(panel,"send"),"내 이모티콘 전송 확인");
+                await(() -> enabled(panel,"backToRooms"),"내 이모티콘 전송 확인");
                 snapshot(panel,"10-week2-game-reward.png");
                 click(panel,"closeEmoticons");
                 Message.of("GAME_STARTED","g2","정윤","2","정윤","민수").write(out);

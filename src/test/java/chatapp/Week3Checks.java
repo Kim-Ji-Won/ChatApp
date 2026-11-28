@@ -182,7 +182,7 @@ public final class Week3Checks {
         ChatPanel p=edt(()->{Theme.install(); return new ChatPanel();});
         try {
             set(p,"nickname","김지원"); click(p,"demo"); await(()->size(p,"roomList")==4,"3주차 데모 연결");
-            openRoom(p,0); await(()->enabled(p,"send"),"데모 방 입장"); click(p,"plannerToggle");
+            openRoom(p,0); await(()->enabled(p,"plannerToggle"),"데모 방 입장"); click(p,"plannerToggle");
             await(()->size(p,"plannerList")==2 && enabled(p,"plannerRefresh"),"할 일·약속을 한 목록에 함께 조회");
             check(visible(p,"plannerListPage") && !visible(p,"plannerFormPage"),"처음에는 통합 목록만 표시");
             check(find(p,"plannerTodos")==null && find(p,"plannerSchedules")==null,"종류별 목록 탭 제거");
@@ -221,7 +221,7 @@ public final class Week3Checks {
             await(()->ui(()->planner(p).state().schedule(added).title().equals("주말 산책과 커피")),"약속 수정");
             selectPlan(p,"SCHEDULE",added); click(p,"plannerDelete"); check(size(p,"plannerList")==3,"삭제 첫 클릭은 확인만"); click(p,"plannerDelete");
             await(()->size(p,"plannerList")==2,"약속 삭제 후 다른 계획 유지");
-            click(p,"plannerClose"); set(p,"messageInput","내일 사진 정리 같이 해요"); click(p,"send"); await(()->enabled(p,"send"),"할 일 원문 채팅 전송");
+            click(p,"plannerClose"); set(p,"messageInput","내일 사진 정리 같이 해요"); click(p,"send"); await(()->text(p,"messageInput").isEmpty() && enabled(p,"backToRooms"),"할 일 원문 채팅 전송");
             click(p,"plannerToggle"); await(()->enabled(p,"plannerRefresh"),"계획 화면 복귀");
             set(p,"plannerFilter","2026-11-22");
             edt(()->{planner(p).fromMessage("김지원","내일 사진 정리 같이 해요"); return null;}); await(()->enabled(p,"plannerSave"),"원문 사본으로 할 일 폼 생성");
@@ -233,7 +233,7 @@ public final class Week3Checks {
             String myTodo=ui(()->planner(p).state().todos().stream().filter(item->item.title().equals("내일 사진 정리 같이 해요")).findFirst().orElseThrow().id());
             selectPlan(p,"TODO",myTodo); snapshot(p,"week3-todos",1080,720); click(p,"plannerComplete"); await(()->ui(()->planner(p).state().todo(myTodo).done()),"작성자 완료 변경");
             selectPlan(p,"TODO",myTodo); click(p,"plannerComplete"); await(()->ui(()->!planner(p).state().todo(myTodo).done()),"완료 취소");
-            leaveViaMenu(p); await(()->enabled(p,"refresh"),"계획 화면에서 퇴장"); openRoom(p,0); await(()->enabled(p,"send"),"데모 재입장"); click(p,"plannerToggle");
+            leaveViaMenu(p); await(()->enabled(p,"refresh"),"계획 화면에서 퇴장"); openRoom(p,0); await(()->enabled(p,"plannerToggle"),"데모 재입장"); click(p,"plannerToggle");
             await(()->size(p,"plannerList")==3 && enabled(p,"plannerRefresh"),"재입장 후 두 종류 계획 재조회");
         } finally { edt(()->{p.close(); return null;}); }
     }
@@ -245,7 +245,7 @@ public final class Week3Checks {
             peer.send(Message.of("WELCOME","지원"),Message.of("ROOMS","r1","연동 확인","2","r2","다른 방","0"));
             await(()->size(p,"roomList")==2,"TCP 방 목록"); openRoom(p,0); check(peer.take().equals(Message.of("ROOM_JOIN","r1")),"TCP 입장 요청");
             peer.send(Message.of("ROOM_JOINED","r1","연동 확인"),Message.of("ROOM_USERS","r1","지원","정윤"));
-            await(()->enabled(p,"send"),"TCP 입장 완료"); click(p,"plannerToggle"); check(peer.take().equals(Message.of("TODO_LIST","r1")),"requestId 없는 목록 요청");
+            await(()->enabled(p,"plannerToggle"),"TCP 입장 완료"); click(p,"plannerToggle"); check(peer.take().equals(Message.of("TODO_LIST","r1")),"requestId 없는 목록 요청");
             peer.send(Message.of("TODO_LIST_START","r1","1"),todo("TODO_ITEM","","","t1","1","처음 제목","지원","정윤","0"));
             edt(()->null); check(size(p,"plannerList")==0,"TCP 부분 목록 노출 없음");
             peer.send(Message.of("TODO_LIST_END","r1"));
@@ -300,7 +300,7 @@ public final class Week3Checks {
             await(()->enabled(p,"plannerRefresh") && text(p,"plannerFeedback").contains("모두 불러오지 못했어요"),"두 번째 목록 실패도 대기 해제와 부분 조회 오류 안내");
             click(p,"plannerClose"); set(p,"messageInput","계속 채팅"); click(p,"send"); check(peer.take().type().equals("CHAT_SEND"),"신규 오류 후 기존 채팅 사용 가능");
             peer.send(Message.of("ERROR","INVALID_TODO","늦은 오류",invalid.field(0))); edt(()->null); check(!enabled(p,"send"),"늦은 3필드 오류가 채팅 대기를 지우지 않음");
-            peer.send(Message.of("CHAT_MESSAGE","r1","지원","계속 채팅")); await(()->enabled(p,"send"),"기존 채팅 성공 처리 유지");
+            peer.send(Message.of("CHAT_MESSAGE","r1","지원","계속 채팅")); await(()->text(p,"messageInput").isEmpty() && enabled(p,"backToRooms"),"기존 채팅 성공 처리 유지");
             click(p,"plannerToggle"); peer.take();
             peer.send(Message.of("TODO_LIST_START","r1","1"),Message.of("TODO_ITEM","t2","1","자료 준비","지원","지원","2026-11-20","09:00","0","지원","자료 준비해요"),Message.of("TODO_LIST_END","r1"));
             check(peer.take().equals(Message.of("SCHEDULE_LIST","r1","")),"전체 일정 조회 필드 유지");
@@ -342,7 +342,7 @@ public final class Week3Checks {
             peer.send(Message.of("WELCOME","지원"),Message.of("ROOMS","r1","바로 완료 확인","2"));
             await(()->size(p,"roomList")==1,"목록 바로 완료용 접속"); openRoom(p,0); peer.take();
             peer.send(Message.of("ROOM_JOINED","r1","바로 완료 확인"),Message.of("ROOM_USERS","r1","지원","정윤"));
-            await(()->enabled(p,"send"),"바로 완료용 방 입장"); click(p,"plannerToggle"); peer.take();
+            await(()->enabled(p,"plannerToggle"),"바로 완료용 방 입장"); click(p,"plannerToggle"); peer.take();
             peer.send(Message.of("TODO_LIST_START","r1","2"),todo("TODO_ITEM","","","q1","1","내 할 일","정윤","지원","0"),todo("TODO_ITEM","","","locked","1","다른 사람 할 일","정윤","정윤","0"),Message.of("TODO_LIST_END","r1"));
             answerSchedules(peer); await(()->enabled(p,"plannerNew"),"바로 완료용 목록 준비"); snapshot(p,"week3-quick-before",960,680);
             quickClick(p,"locked",1); check(peer.noRequest() && visible(p,"plannerListPage"),"권한 없는 원형 표시는 요청이나 상세 화면을 열지 않음");
