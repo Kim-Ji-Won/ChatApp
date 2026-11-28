@@ -561,6 +561,9 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         replyExcerpt.putClientProperty("html.disable", true);
         replyAuthor.putClientProperty("html.disable", true);
         replyExcerpt.setMinimumSize(new Dimension(0, 16));
+        previewText.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 2, 0, 0, Theme.MUTED),
+                new EmptyBorder(0, 8, 0, 0)));
         previewText.add(replyAuthor);
         previewText.add(replyExcerpt);
         replyPreview.setName("replyPreview");
@@ -643,6 +646,7 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         });
     }
     private void saveDraft() {
+        send.setEnabled(canSendChat());
         if (currentRoom == null) return;
         String value = messageInput.getText();
         if (value.isEmpty()) drafts.remove(currentRoom); else drafts.put(currentRoom,value);
@@ -691,8 +695,12 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         setReplyTarget(null);
     }
 
+    private boolean canSendChat() {
+        return connected && currentRoom != null && pending == null
+                && messageInput.getText().codePoints().anyMatch(c -> !Character.isWhitespace(c) && !Character.isSpaceChar(c));
+    }
     private void sendChat() {
-        if (!connected || currentRoom == null || pending != null) return;
+        if (!canSendChat()) return;
         String body = messageInput.getText().strip();
         if (!validText(body, 1000)) { info("메시지는 제어문자 없이 1~1000자로 입력해 주세요.", true); return; }
         if (replyTarget == null) {
@@ -961,7 +969,8 @@ public final class ChatPanel extends JPanel implements AutoCloseable {
         refresh.setEnabled(ready); roomName.setEnabled(ready);
         roomMenu.setEnabled(connected && currentRoom != null);
         backToRooms.setEnabled(ready && currentRoom != null);
-        leave.setEnabled(ready && currentRoom != null); send.setEnabled(ready && currentRoom != null);
+        leave.setEnabled(ready && currentRoom != null);
+        send.setEnabled(canSendChat());
         membersToggle.setEnabled(connected && currentRoom != null);
         toolsToggle.setEnabled(connected && currentRoom != null);
         cancelReply.setEnabled(!"reply".equals(pending));
